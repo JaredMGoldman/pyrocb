@@ -7,6 +7,7 @@ from scipy.stats import linregress
 from helper_functions import summarize_error
 import numpy as np
 import pandas as pd
+from utils import *
 
 def plot_category_heatmap(data_plot, obs_label, mod_label, model_axis_label):
     conf_mat = confusion_matrix(data_plot[obs_label], data_plot[mod_label], labels=['decrease', 'no_change', 'increase'])
@@ -77,7 +78,7 @@ def plot_2dhist_withfit(df_plot, x_data, y_data, log_x_data,log_y_data, inc_cuto
     plt.title(title)
     plt.show()
     
-def plot_importances(forest, varnames,plot_title):
+def plot_importances(forest, varnames, plot_title):
     tree_indices = np.arange(0, len(forest.feature_importances_)) + 0.5
     importances = forest.feature_importances_ #importances for all trees, so if you have 100 trees and 5 features this is a 100x5 (or 5x100) matrix
     std = np.std([tree.feature_importances_ for tree in forest.estimators_], axis=0)
@@ -92,7 +93,8 @@ def plot_importances(forest, varnames,plot_title):
     ax1.set_ylim((-0.5, len(df_plot['importances']))) #the height of the figure depends on the # of variables plotted
     fig.tight_layout()
     plt.title(plot_title) #title!
-    plt.show()
+    save_path = save_model(f"importances_{plot_title}.png")
+    print("Saved:", save_path)
 
 def frp_hist2d_v2(df_plot, x_data, y_data,log_x_data,log_y_data, cmap_name, v_min, v_max, x_axis_label, vars_in_model):
     lr = linregress(df_plot[log_x_data], df_plot[log_y_data])

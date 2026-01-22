@@ -2,13 +2,13 @@ import pandas as pd
 import numpy as np
 
 #LOAD IN THE FEATURE CSV WITH HDW500 (which now also has HRRR moisture added in)
-features_no_outliers_weighted = pd.read_csv('features_no_outliers_weightedHDW500.csv',
+features_no_outliers_weighted = pd.read_csv('/data/lthapa/data2restore/lthapa/ML_daily/features_no_outliers_weightedHDW500.csv',
                                            parse_dates=['datetime'])
 features_no_outliers_weighted=features_no_outliers_weighted.drop(columns=['Unnamed: 0'])
 #print(features_no_outliers_weighted.columns.values)
 
 #get the irwinids of the test set
-incidents_all = pd.read_csv('unique_fires_with_area_and_irwin_192021.csv')
+incidents_all = pd.read_csv('/data/lthapa/data2restore/lthapa/ML_daily/unique_fires_with_area_and_irwin_192021.csv')
 ac = incidents_all[incidents_all['Fire Name']=='AUGUST COMPLEX']
 wf = incidents_all[incidents_all['Fire Name']=='Williams Flats']
 dix = incidents_all[incidents_all['Fire Name']=='DIXIE']
@@ -32,3 +32,6 @@ data_train_1921 = features_no_outliers_weighted[(features_no_outliers_weighted['
 print(len(data_train_1921), np.unique(data_train_1921['year']))
 #data_train_1921 = data_train_1921.iloc[np.where(~data_train_1921.irwinID.str.contains('|'.join(test_irwin_ids)))] #drop WF and Dixie
 print(len(data_train_1921), np.unique(data_train_1921['year']))
+
+def load_data():
+    return data_train_1921, data_test_2020

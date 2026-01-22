@@ -347,7 +347,7 @@ axs[1].set_title('Log of Daily Total FRP')
 feat_noinf['rel_FRP'].plot.hist(bins=20, ax=axs[2])
 axs[2].set_title('Daily Relative Change in FRP')
 
-plt.savefig('FRP_plots.png')
+plt.save_plot('FRP_plots.png')
 #line plots
 for ii in range(len(fire_incidents)):
     fire_plot = resample_daily(feat[feat['name']==fire_incidents[ii]], 'datetime')
