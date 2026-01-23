@@ -82,6 +82,42 @@ def find_common_fires(all_fires_fn, mtbs_bdrys, fire_daily):
     common_fires = [irwin_id for irwin_id in common_fires if len(fire_daily[fire_daily['irwinID'] == irwin_id]['irwinID'].values)>0]
     return common_fires, fire_dict
 
+def polygon_from_prediction(fire_id, fire_name, 
+                            pred_frp, 
+                            mtbs_bdry, fire_daily,
+                            crs = 'EPSG:4326'):
+    """
+    JUST REASSIGN NEW FRP COLUMN INSTEAD OF RECREATING WHOLE PLOTTING FUNCTION 
+        AND PASS TO REGULAR POLYGON PLOT
+        
+    1) NAIVELY CHOOSE FRP VALUES AT SAME POINT AS DAILY VIIRS POINTS
+    2) TRACK VALUES OF LOCATION THROUGH TRAINING DATA DURING FEATURE GENERATION
+    3) PREDICT FIRE SPREAD
+
+    Docstring for polygon_from_prediction
+    
+    :param pred_frp: Description
+    :param mtbs_bdry: Description
+    :param fire_daily: Description
+    """
+    fig = plt.figure(figsize=(10,14))
+    ax= fig.add_subplot(111,projection=ccrs.PlateCarree())
+    bdry = mtbs_bdrys.loc[mtbs_bdrys['irwinID']== fire_id].to_crs(crs)
+    this_fire = daily_fires.loc[daily_fires['irwinID']== fire_id].to_crs(crs)
+    this_fire.plot(column='NEW FRP',cmap='OrRd', ax=ax)
+    bdry.boundary.plot(ax=ax, edgecolor='k')
+    plt.title(fire_name, fontsize=24)
+    minx, maxx, miny, maxy = combined_extent(bdry, this_fire, buffer_frac=0.03)
+    ax.set_xlim(minx, maxx)
+    ax.set_ylim(miny, maxy)
+    ax.set_aspect("equal")
+    ax.set_axis_off()
+    gl = ax.gridlines(crs=ccrs.PlateCarree(), draw_labels=True,\
+                linewidth=2, color='gray', alpha=0.5, linestyle='--')
+    gl.top_labels = False
+    gl.right_labels = False
+    save_plot(f"{slugify(fire_name)}_polygon")
+
 if __name__ == "__main__":
     daily_fires = gpd.read_file(FIRE_DAILY_FN)
     mtbs_bdrys = load_mtbs(MTBS_DIR)

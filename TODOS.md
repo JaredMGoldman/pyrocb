@@ -31,4 +31,19 @@
         - polygons
     * created script to track down files
     * reviewed Thalpa et al research paper
+
+* 1-22-26
+    * created polygons from given data
+    * trained ml model and evaluated feature importances
+    * loaded features
+    * refactored code
+    * TODO:
+        * unify feature creation script
+        * load data dynamically (when applicable)
+            * consult with Laura on data access creds
+        * create a data loading pipeline
+        * create a polygon generation pipeline
+        * create a ml training/eval pipeline
+        * Generate a number of plotting scripts
+        * determine appropriate propogation of FRP estimates
      
