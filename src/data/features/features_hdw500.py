@@ -4,17 +4,17 @@ import numpy as np
 import xarray as xr
 from joblib import Parallel, delayed
 
-from utils import calculate_intersection, make_file_namelist, generate_df
+from utils import calculate_intersection, make_file_namelist, generate_df, ML_DATA_ROOT
 
 #HRRR_WS formulation from, take time mean, then take weighted average. For HDW, multiply the weighted means of VPD and WIND
-def hdw500_lagged_timeseries(df, hrrr_data_root):  #with the wind speed
+def hdw500_lagged_timeseries(df, hrrr_data_root = f"{ML_DATA_ROOT}/pygraf/processed_hrrr_hdw_hwp"):  #with the wind speed
     varis_hrrr_derived = ['day','hd0w0', 'hd1w0','hd2w0', 'hd3w0']#, 'hd4w0', 'hd5w0',
     df_hdw_weighted = generate_df(varis_hrrr_derived, len(df))
     df_hdw_unweighted = generate_df(varis_hrrr_derived, len(df))
     
     #do the intersection, in parallel
     hrrr_intersections = Parallel(n_jobs=8)(delayed(calculate_intersection)
-                                 (df.iloc[ii:ii+1],'HRRR_GRID',3000) 
+                                 (df.iloc[ii:ii+1],f'{ML_DATA_ROOT}/HRRR_GRID',3000) 
                                  for ii in range(len(df)))
     
     fire_hrrr_intersection=gpd.GeoDataFrame(pd.concat(hrrr_intersections, ignore_index=True))
@@ -46,7 +46,7 @@ def hdw500_lagged_timeseries(df, hrrr_data_root):  #with the wind speed
         day0 = np.datetime64(today)+np.timedelta64(12,'h')
         w0 = dat_hrrr['wind_speed'].sel(
             time=pd.date_range( start=day0, 
-                                end=day+np.timedelta64(23,'h'),
+                                end=day0+np.timedelta64(23,'h'),
                                 freq='H'), 
             grid_yt = np.unique(intersection_sub['row'].values),
             grid_xt = np.unique(intersection_sub['col'].values))

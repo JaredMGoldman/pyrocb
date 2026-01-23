@@ -16,6 +16,7 @@ import xarray as xr
 
 PLOTS_DIR = "outputs/plots"
 MODELS_DIR = "outputs/models"
+ML_DATA_ROOT = "/data/lthapa/data2restore/lthapa/ML_daily"
 
 def get_repo_root() -> Path:
     """
@@ -161,7 +162,6 @@ def make_file_namelist(time,base_filename):
                                 replace('DD',time[jj].strftime('%d')).\
                                 replace('HH',time[jj].strftime('%H')).\
                                 replace('JJJ',time[jj].strftime('%j'))
-
         if exists(fname):
             filename_list = np.append(filename_list,fname)
             times_back_used = np.append(times_back_used,time[jj])

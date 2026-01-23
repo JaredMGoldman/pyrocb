@@ -1,16 +1,28 @@
 import pandas as pd
 import numpy as np
 import xarray as xr
+import geopandas as gpd
+from joblib import Parallel, delayed
 
-from utils import parallel_intersection_labels, make_file_namelist, generate_df
+from utils import calculate_intersection, make_file_namelist, generate_df, ML_DATA_ROOT
 
 def smops_timeseries(df, data_root = '/data/lthapa/data2restore/lthapa'):
     varis_smops = ['day','Blended_SM']
     df_smops_weighted = generate_df(varis_smops, len(df))
     df_smops_unweighted = generate_df(varis_smops, len(df))
     
-    fire_smops_intersection_xr = parallel_intersection_labels(df, 'SMOPS_GRID')
+    smops_intersections = Parallel(n_jobs=8)(delayed(calculate_intersection)
+                                 (df.iloc[ii:ii+1],f'{ML_DATA_ROOT}/SMOPS_GRID',25000) 
+                                 for ii in range(len(df)))
 
+    fire_smops_intersection=gpd.GeoDataFrame(pd.concat(smops_intersections, ignore_index=True))
+    fire_smops_intersection.set_geometry(col='geometry')  
+    fire_smops_intersection = fire_smops_intersection.set_index(['12Z Start Day', 'row', 'col'])
+    fire_smops_intersection=fire_smops_intersection[~fire_smops_intersection.index.duplicated()]
+
+    fire_smops_intersection_xr = fire_smops_intersection.to_xarray()
+    fire_smops_intersection_xr['weights_mask'] = xr.where(fire_smops_intersection_xr['weights']>0,1, np.nan)
+    
     #load in rave data associated with the fire
     times = pd.date_range(np.datetime64(df['12Z Start Day'].iloc[0]),
                         np.datetime64(df['12Z Start Day'].iloc[len(df)-1])+

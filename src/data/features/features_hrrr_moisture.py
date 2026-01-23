@@ -1,23 +1,36 @@
 import pandas as pd
 import numpy as np
+import geopandas as gpd
 import xarray as xr
+from joblib import Parallel, delayed
 
-from utils import parallel_intersection_labels, make_file_namelist, generate_df
+from utils import calculate_intersection, make_file_namelist, generate_df, ML_DATA_ROOT
 
 def hrrr_moisture_timeseries(df, 
-                             hrrr_data_root = "/data/lthapa/data2restore/lthapa/ML_daily/pygraf/processed_hrrr_hdw_hwp",
+                             hrrr_data_root = "/data/lthapa/data2restore/lthapa/ML_daily/pygraf/processed_hrrr_moisture",
                              landmask_data = '/data/lthapa/data2restore/lthapa/ML_daily/pygraf/HRRR_LANDMASK.nc'):
     varis_hrrr_moisture = ['day','soilm_sfc', 'soilm_1cm', 'soilm_4cm', 'soilm_10cm', 'soilm_30cm']
     
     df_hrrr_moisture_weighted = generate_df(varis_hrrr_moisture, len(df))
     df_hrrr_moisture_unweighted = generate_df(varis_hrrr_moisture, len(df))
 
-    fire_hrrr_moisture_intersection_xr = parallel_intersection_labels(df, 'HRRR_GRID')
+    #do the intersection, in parallel
+    hrrr_moisture_intersections = Parallel(n_jobs=8)(delayed(calculate_intersection)
+                                 (df.iloc[ii:ii+1],f'{ML_DATA_ROOT}/HRRR_GRID',3000) 
+                                 for ii in range(len(df)))
     
+    fire_hrrr_moisture_intersection=gpd.GeoDataFrame(pd.concat(hrrr_moisture_intersections, ignore_index=True))
+    fire_hrrr_moisture_intersection.set_geometry(col='geometry')  
+    fire_hrrr_moisture_intersection = fire_hrrr_moisture_intersection.set_index(['12Z Start Day', 'row', 'col'])
+    fire_hrrr_moisture_intersection=fire_hrrr_moisture_intersection[~fire_hrrr_moisture_intersection.index.duplicated()]
+
+    fire_hrrr_moisture_intersection_xr = fire_hrrr_moisture_intersection.to_xarray()
+    fire_hrrr_moisture_intersection_xr['weights_mask'] = xr.where(fire_hrrr_moisture_intersection_xr['weights']>0,1, np.nan)
+
     #load in data associated with the fire
     times = pd.date_range(np.datetime64(df['12Z Start Day'].iloc[0]),
                         np.datetime64(df['12Z Start Day'].iloc[len(df)-1])+
-                        np.timedelta64(1,'D'))
+                        np.timedelta64(1,'D'), freq = '1h')
     hrrr_moisture_filenames,times_back_used = make_file_namelist(times,f'{hrrr_data_root}/Processed_HRRR_YYYYMMDDHH_MOISTURE.nc')
     landmask = xr.open_dataset(landmask_data)
 
@@ -25,10 +38,10 @@ def hrrr_moisture_timeseries(df,
     dat_hrrr_moisture = dat_hrrr_moisture.assign_coords({'Time': times_back_used}) #assign coords so we can select in time
 
     #select the locations and times we want
-    hrrr_daily_mean = dat_hrrr_moisture.resample(Time='24H',base=12, label='left').mean(dim='Time') #take the daily mean       
+    hrrr_daily_mean = dat_hrrr_moisture.resample(Time='24H',offset='12H', label='left').mean() #take the daily mean       
     hrrr_daily_mean_region = hrrr_daily_mean.sel(grid_yt = np.unique(fire_hrrr_moisture_intersection_xr['row'].values),
                                                     grid_xt = np.unique(fire_hrrr_moisture_intersection_xr['col'].values)).sel(
-                    Time = pd.to_datetime(fire_hrrr_moisture_intersection_xr['12Z Start Day'].values + ' 12:00:00'), method='nearest')#these should be lined up correctly
+                    Time = pd.to_datetime(fire_hrrr_moisture_intersection_xr['12Z Start Day'].values + np.timedelta64(12,'h')), method='nearest')#these should be lined up correctly
     landmask_region = landmask.sel(grid_yt = np.unique(fire_hrrr_moisture_intersection_xr['row'].values),
                                    grid_xt = np.unique(fire_hrrr_moisture_intersection_xr['col'].values))
     landmask_region_masked = landmask_region.where(landmask_region['landmask']!=0)

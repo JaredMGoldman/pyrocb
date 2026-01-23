@@ -1,13 +1,27 @@
 import pandas as pd
 import numpy as np
+import geopandas as gpd
 import xarray as xr
+from joblib import Parallel, delayed
 
-from utils import parallel_intersection_labels
+from utils import calculate_intersection, ML_DATA_ROOT
 
 
-def pop_timeseries(df, pop_data = '/data/lthapa/data2restore/lthapa/static_maps/gpw_v4_population_density_rev11_2pt5_min.nc'):
+def pop_timeseries(df, pop_data = '/data/lthapa/data2restore/lthapa/static_maps/population_density/gpw_v4_population_density_rev11_2pt5_min.nc'):
     #do the intersection, in parallel
-    fire_pop_intersection_xr = parallel_intersection_labels(df, 'POP_GRID')
+    pop_intersections = Parallel(n_jobs=10)(delayed(calculate_intersection)
+                                 (df.iloc[ii:ii+1],f'{ML_DATA_ROOT}/POP_GRID',5000) 
+                                 for ii in range(len(df)))
+    print([pop_intersections[jj]['weights'].sum() for jj in range(len(pop_intersections))])
+
+    
+    fire_pop_intersection=gpd.GeoDataFrame(pd.concat(pop_intersections, ignore_index=True))
+    fire_pop_intersection.set_geometry(col='geometry')
+    fire_pop_intersection = fire_pop_intersection.set_index(['12Z Start Day', 'lat', 'lon'])
+    
+    fire_pop_intersection_xr = fire_pop_intersection.to_xarray()
+    
+    fire_pop_intersection_xr['weights_mask'] = xr.where(fire_pop_intersection_xr['weights']>0,1, np.nan)
     
     # load in Pop data associated with the fire (it's only one dataset)  
     # open the Pop files

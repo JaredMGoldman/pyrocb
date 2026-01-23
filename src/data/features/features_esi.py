@@ -1,15 +1,29 @@
 import pandas as pd
 import numpy as np
+import geopandas as gpd
 import xarray as xr
+from joblib import Parallel, delayed
 
-from utils import parallel_intersection_labels, make_file_namelist
+
+from utils import calculate_intersection, make_file_namelist, ML_DATA_ROOT
 
 def esi_timeseries(df, esi_data_dir = "/data/lthapa/data2restore/lthapa"):
     #preallocate space for the output
     df_esi_weighted = pd.DataFrame({'day':np.zeros(len(df)),'ESI':np.zeros(len(df))})
     df_esi_unweighted = pd.DataFrame({'day':np.zeros(len(df)),'ESI':np.zeros(len(df))})
     
-    fire_esi_intersection_xr = parallel_intersection_labels(df, 'ESI_GRID')
+    #do the intersection, in parallel
+    esi_intersections = Parallel(n_jobs=8)(delayed(calculate_intersection)
+                                 (df.iloc[ii:ii+1],f'{ML_DATA_ROOT}/ESI_GRID',5000) 
+                                 for ii in range(len(df)))
+    
+    fire_esi_intersection=gpd.GeoDataFrame(pd.concat(esi_intersections, ignore_index=True))
+    fire_esi_intersection.set_geometry(col='geometry')
+    
+    fire_esi_intersection = fire_esi_intersection.set_index(['12Z Start Day', 'lat', 'lon'])
+    
+    fire_esi_intersection_xr = fire_esi_intersection.to_xarray()
+    fire_esi_intersection_xr['weights_mask'] = xr.where(fire_esi_intersection_xr['weights']>0,1, np.nan)
 
     #load in esi data associated with the fire
     times = pd.date_range(np.datetime64(df['12Z Start Day'].iloc[0])-np.timedelta64(1,'W'),

@@ -1,7 +1,9 @@
 import pandas as pd
 import numpy as np
 import xarray as xr
-from utils import parallel_intersection_labels, make_file_namelist, generate_df
+import geopandas as gpd
+from joblib import Parallel, delayed
+from utils import calculate_intersection, make_file_namelist, generate_df, ML_DATA_ROOT
 
 #ncar grid was 1000m = 1km = grid resolution
 # fwi grid was 10000m=10km = grid resolution
@@ -10,7 +12,17 @@ def ncar_timeseries(df, data_root = '/data/lthapa/data2restore/lthapa'):
     df_ncar_weighted = generate_df(varis_ncar, len(df))
     df_ncar_unweighted = generate_df(varis_ncar, len(df))
 
-    fire_ncar_intersection_xr = parallel_intersection_labels(df, 'NCAR_MOISTURE_GRID')
+    ncar_intersections = Parallel(n_jobs=8)(delayed(calculate_intersection)
+                                 (df.iloc[ii:ii+1],f'{ML_DATA_ROOT}/NCAR_MOISTURE_GRID',1000) 
+                                 for ii in range(len(df)))
+    
+    fire_ncar_intersection=gpd.GeoDataFrame(pd.concat(ncar_intersections, ignore_index=True))
+    fire_ncar_intersection.set_geometry(col='geometry')  
+    fire_ncar_intersection = fire_ncar_intersection.set_index(['12Z Start Day', 'row', 'col'])
+    fire_ncar_intersection=fire_ncar_intersection[~fire_ncar_intersection.index.duplicated()]
+
+    fire_ncar_intersection_xr = fire_ncar_intersection.to_xarray()
+    fire_ncar_intersection_xr['weights_mask'] = xr.where(fire_ncar_intersection_xr['weights']>0,1, np.nan)
     
     #load in rave data associated with the fire
     times = pd.date_range(np.datetime64(df['12Z Start Day'].iloc[0]),

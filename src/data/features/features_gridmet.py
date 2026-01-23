@@ -1,7 +1,9 @@
 import pandas as pd
 import numpy as np
+from joblib import Parallel, delayed
+import geopandas as gpd
 import xarray as xr
-from utils import parallel_intersection_labels, make_file_namelist, generate_df
+from utils import calculate_intersection, make_file_namelist, generate_df, ML_DATA_ROOT
 
 def gridmet_timeseries(df, gridmet_data_root = '/data/lthapa/data2restore/lthapa'):
     varis_gridmet = ['day','burning_index_g','energy_release_component-g',
@@ -16,8 +18,18 @@ def gridmet_timeseries(df, gridmet_data_root = '/data/lthapa/data2restore/lthapa
     df_gridmet_unweighted = generate_df(varis_gridmet, len(df))
 
     #do the intersection, in parallel
-    fire_gridmet_intersection_xr = parallel_intersection_labels(df, "GRIDMET_GRID")
+    gridmet_intersections = Parallel(n_jobs=8)(delayed(calculate_intersection)
+                                 (df.iloc[ii:ii+1],f'{ML_DATA_ROOT}/GRIDMET_GRID',4000) 
+                                 for ii in range(len(df)))
 
+    fire_gridmet_intersection=gpd.GeoDataFrame(pd.concat(gridmet_intersections, ignore_index=True))
+    fire_gridmet_intersection.set_geometry(col='geometry')  
+    fire_gridmet_intersection = fire_gridmet_intersection.set_index(['12Z Start Day', 'row', 'col'])
+    fire_gridmet_intersection=fire_gridmet_intersection[~fire_gridmet_intersection.index.duplicated()]
+
+    fire_gridmet_intersection_xr = fire_gridmet_intersection.to_xarray()
+    fire_gridmet_intersection_xr['weights_mask'] = xr.where(fire_gridmet_intersection_xr['weights']>0,1, np.nan)
+    
     #load in rave data associated with the fire
     times = pd.date_range(np.datetime64(df['12Z Start Day'].iloc[0]),
                         np.datetime64(df['12Z Start Day'].iloc[len(df)-1])+

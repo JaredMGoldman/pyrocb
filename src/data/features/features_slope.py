@@ -1,14 +1,28 @@
 import pandas as pd
 import numpy as np
 import xarray as xr
+import geopandas as gpd
+from joblib import Parallel, delayed
 
-from utils import parallel_intersection_labels
+from utils import calculate_intersection, ML_DATA_ROOT
 
 
-def slope_timeseries(df, slope_data = '/data2/lthapa/ML_daily/slope_990m_LF2020.nc'):
+def slope_timeseries(df, slope_data = f'{ML_DATA_ROOT}/slope_990m_LF2020.nc'):
     #do the intersection, in parallel
-    fire_slope_intersection_xr = parallel_intersection_labels(df, 'SLOPE_GRID_990M')
-        
+    slope_intersections = Parallel(n_jobs=10)(delayed(calculate_intersection)
+                                 (df.iloc[ii:ii+1],f'{ML_DATA_ROOT}/SLOPE_GRID_990M',2000) 
+                                 for ii in range(len(df)))
+    print([slope_intersections[jj]['weights'].sum() for jj in range(len(slope_intersections))])
+
+    
+    fire_slope_intersection=gpd.GeoDataFrame(pd.concat(slope_intersections, ignore_index=True))
+    fire_slope_intersection.set_geometry(col='geometry')
+    fire_slope_intersection = fire_slope_intersection.set_index(['12Z Start Day', 'row', 'col'])
+    
+    fire_slope_intersection_xr = fire_slope_intersection.to_xarray()
+    
+    fire_slope_intersection_xr['weights_mask'] = xr.where(fire_slope_intersection_xr['weights']>0,1, np.nan)
+       
     #load in SLOPE data associated with the fire (it's only one dataset)  
     #open the SLOPE files
     dat_slope = xr.open_dataset(slope_data) #map is fixed in time

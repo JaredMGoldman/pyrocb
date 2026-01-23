@@ -2,11 +2,11 @@ import pandas as pd
 import numpy as np
 import xarray as xr
 
-from utils import parallel_intersection_labels
+from utils import parallel_intersection_labels, ML_DATA_ROOT
 
 
 def pws_timeseries(df, pws_data = 'data/lthapa/data2restore/lthapa/PWS_6_jan_2021.nc'):
-    fire_pws_intersection_xr = parallel_intersection_labels(df, 'PWS_GRID')
+    fire_pws_intersection_xr = parallel_intersection_labels(df, f'{ML_DATA_ROOT}/PWS_GRID')
     
     #load in PWS data associated with the fire (it's only one dataset)  
     #open the PWS files

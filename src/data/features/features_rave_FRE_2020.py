@@ -1,15 +1,28 @@
 import pandas as pd
 import numpy as np
 import xarray as xr
+import geopandas as gpd
+from joblib import Parallel, delayed
 
-from utils import parallel_intersection_labels, make_file_namelist, generate_df
+from utils import calculate_intersection, make_file_namelist, generate_df, ML_DATA_ROOT
 
 def rave_timeseries2020(df, data_root = '/data/lthapa/data2restore/lthapa'):
     varis = ['day','FRE']#, 'FRP_SD', 'FRE']#, 'CO2', 'CO', 'SO2', 'OC','BC', 'PM25', 'NOx', 'NH3','TPM', 'VOCs', 'CH4'] #don't need 'area', it's the area of each cell
     df_rave_weighted = generate_df(varis, len(df))
     df_rave_unweighted = generate_df(varis, len(df))
 
-    fire_rave_intersection_xr = parallel_intersection_labels(df, 'RAVE_GRID_3KM')
+    rave_intersections = Parallel(n_jobs=8)(delayed(calculate_intersection)
+                                 (df.iloc[ii:ii+1],f'{ML_DATA_ROOT}/RAVE_GRID_3KM',3000) 
+                                 for ii in range(len(df)))
+
+    fire_rave_intersection=gpd.GeoDataFrame(pd.concat(rave_intersections, ignore_index=True))
+    fire_rave_intersection.set_geometry(col='geometry')    
+
+    fire_rave_intersection = fire_rave_intersection.set_index(['12Z Start Day', 'row', 'col'])
+    fire_rave_intersection=fire_rave_intersection[~fire_rave_intersection.index.duplicated()]
+
+    fire_rave_intersection_xr = fire_rave_intersection.to_xarray()
+    fire_rave_intersection_xr['weights_mask'] = xr.where(fire_rave_intersection_xr['weights']>0,1, np.nan)
     
     #load in rave data associated with the fire
     times = pd.date_range(np.datetime64(df['12Z Start Day'].iloc[0]),
@@ -21,13 +34,12 @@ def rave_timeseries2020(df, data_root = '/data/lthapa/data2restore/lthapa'):
     #print(rave_filenames)
     dat_rave = xr.open_mfdataset(rave_filenames,concat_dim='time',combine='nested',compat='override', coords='all')
 
-    dat_rave = dat_rave.resample(time='24H',base=12).sum(dim='time') #take the daily sum
+    dat_rave = dat_rave.resample(time='24H',offset='12H').sum() #take the daily sum
     
     #select the locations and times we want
     dat_rave_sub = dat_rave.isel(grid_yt = fire_rave_intersection_xr['row'].values.astype(int), 
                     grid_xt = fire_rave_intersection_xr['col'].values.astype(int)).sel(
-                    time = pd.to_datetime(fire_rave_intersection_xr['12Z Start Day'].values+
-                                         'T12:00:00.000000000'))#these should be lined up correctly
+                    time = pd.to_datetime(fire_rave_intersection_xr['12Z Start Day'].values+np.timedelta64(12,'h')))#these should be lined up correctly
 
     df_rave_weighted['day'].iloc[:] = pd.to_datetime(fire_rave_intersection_xr['12Z Start Day'].values)
     df_rave_unweighted['day'].iloc[:] = pd.to_datetime(fire_rave_intersection_xr['12Z Start Day'].values)

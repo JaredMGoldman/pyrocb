@@ -13,7 +13,6 @@ def resources_timeseries(df, sit209_data):
     fire_lon = df['Lon Fire'].iloc[0]
     
     sit209_data_fire = sit209_data[sit209_data['IRWIN_IDENTIFIER']==incident_number]
-    print(sit209_data_fire)
     if len(sit209_data_fire)==0:
         return 1
 
