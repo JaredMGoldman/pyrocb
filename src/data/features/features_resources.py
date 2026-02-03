@@ -14,7 +14,7 @@ def resources_timeseries(df, sit209_data):
     
     sit209_data_fire = sit209_data[sit209_data['IRWIN_IDENTIFIER']==incident_number]
     if len(sit209_data_fire)==0:
-        return 1
+        return sit209_data_fire
 
     #do the time zone conversion
     obj=TimezoneFinder() #initialize the timezone finder

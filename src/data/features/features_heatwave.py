@@ -1,8 +1,10 @@
 import pandas as pd
 import numpy as np
+import geopandas as gpd
 import xarray as xr
 from datetime import datetime
-from utils import parallel_intersection_labels, generate_df, ML_DATA_ROOT
+from joblib import Parallel, delayed
+from utils import calculate_intersection, generate_df, ML_DATA_ROOT
     
 def count_heatwave_days(fire_intersection, time_gridmet_file, heatwave_days, var_to_check, gridmet_data_root):
     #load in the gridmet file to check for exceedances
@@ -30,8 +32,20 @@ def count_heatwave_days(fire_intersection, time_gridmet_file, heatwave_days, var
 def heatwave_timeseries(df, gridmet_data_root = "/data/lthapa/data2restore/lthapa"):
     varis = ['day','days_in_high_heatwave', 'days_in_highlow_heatwave'] 
     df_heatwave= generate_df(varis, len(df))
-    
-    fire_gridmet_intersection_xr = parallel_intersection_labels(df, f'{ML_DATA_ROOT}/WESTUS_GRIDMET_GRID').rename(name_dict = {'12Z Start Day': 'Start_Day'})
+    gridmet_intersections = Parallel(n_jobs=8)(delayed(calculate_intersection)
+                                    (df.iloc[ii:ii+1],f'{ML_DATA_ROOT}/WESTUS_GRIDMET_GRID',100000) 
+                                    for ii in range(len(df)))
+
+    fire_gridmet_intersection=gpd.GeoDataFrame(pd.concat(gridmet_intersections, ignore_index=True))
+    fire_gridmet_intersection.set_geometry(col='geometry')    
+    fire_gridmet_intersection = fire_gridmet_intersection.set_index(['12Z Start Day', 'lat', 'lon'])
+
+    fire_gridmet_intersection=fire_gridmet_intersection[~fire_gridmet_intersection.index.duplicated()]
+
+    fire_gridmet_intersection_xr = fire_gridmet_intersection.to_xarray()
+    fire_gridmet_intersection_xr['weights_mask'] = xr.where(fire_gridmet_intersection_xr['weights']>0,1, np.nan)
+
+    fire_gridmet_intersection_xr = fire_gridmet_intersection_xr.rename(name_dict = {'12Z Start Day': 'Start_Day'})
     
     for xx in range(len(fire_gridmet_intersection_xr['Start_Day'].values)): #loop over all the days where we have polygons
         poly_time = fire_gridmet_intersection_xr['Start_Day'].values[xx]
@@ -47,7 +61,6 @@ def heatwave_timeseries(df, gridmet_data_root = "/data/lthapa/data2restore/lthap
         df_heatwave['days_in_highlow_heatwave'].iloc[xx] = count_heatwave_days(intersection_today, poly_time, 
                                                                                days_in_highlow_heatwave, 'is_highlow_heatwave',
                                                                                gridmet_data_root)
-        
-    df_heatwave['day'].iloc[:] = pd.to_datetime(fire_gridmet_intersection_xr['Start_Day'].values)
+        df_heatwave['day'].iloc[xx] = intersection_today['Start_Day'].values
     
     return df_heatwave

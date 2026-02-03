@@ -1,13 +1,23 @@
 import pandas as pd
 import numpy as np
 import xarray as xr
+import geopandas as gpd
+from joblib import Parallel, delayed
 
-from utils import parallel_intersection_labels, ML_DATA_ROOT
+from utils import calculate_intersection, ML_DATA_ROOT
 
 
 def pws_timeseries(df, pws_data = 'data/lthapa/data2restore/lthapa/PWS_6_jan_2021.nc'):
-    fire_pws_intersection_xr = parallel_intersection_labels(df, f'{ML_DATA_ROOT}/PWS_GRID')
+    pws_intersections = Parallel(n_jobs=10)(delayed(calculate_intersection)
+                                (df.iloc[ii:ii+1],f'{ML_DATA_ROOT}/PWS_GRID',4000) 
+                                for ii in range(len(df)))
     
+    fire_pws_intersection=gpd.GeoDataFrame(pd.concat(pws_intersections, ignore_index=True))
+    fire_pws_intersection.set_geometry(col='geometry')
+    fire_pws_intersection = fire_pws_intersection.set_index(['12Z Start Day', 'lat', 'lon'])
+    
+    fire_pws_intersection_xr = fire_pws_intersection.to_xarray()
+    fire_pws_intersection_xr['weights_mask'] = xr.where(fire_pws_intersection_xr['weights']>0,1, np.nan)
     #load in PWS data associated with the fire (it's only one dataset)  
     #open the PWS files
     dat_pws = xr.open_dataset(pws_data) #map is fixed in time

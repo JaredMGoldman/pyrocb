@@ -43,7 +43,6 @@ def eval_model(model, feature_set, target):
     return results_dict
 
 if __name__ == "__main__":
-    import ipdb; ipdb.set_trace()
     feature_sets = ['features_no_persistence']
     target = "log_Scaling_Factor"
     for feature_set in feature_sets:

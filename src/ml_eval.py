@@ -1,45 +1,15 @@
 import pandas as pd
-#pd.set_option('display.max_rows', None)
-import geopandas as gpd
 import matplotlib.pyplot as plt
-from matplotlib import path
-import os
-import cartopy.crs as ccrs
-import cartopy.feature as cfeature
-import cartopy
 import numpy as np
-import netCDF4 as nc
-import ipdb
-np.set_printoptions(threshold=100000)
-from shapely.geometry import Polygon, Point, MultiPoint
-from datetime import datetime, timedelta
-import time
 import warnings
-import datetime
 from functools import reduce
-import math
-from scipy.ndimage.interpolation import shift
-import shapely.wkt
-from scipy.stats import pearsonr,spearmanr,kendalltau
-from scipy.optimize import curve_fit 
 
 warnings.filterwarnings('ignore')
 import seaborn as sns
-sns.set(font_scale=1.4) 
-from my_functions import sat_vap_press, vap_press, hot_dry_windy, haines
 from os.path import exists
 
-from sklearn.linear_model import Ridge, LinearRegression
-from sklearn.model_selection import train_test_split
-from sklearn.inspection import permutation_importance
-
-from sklearn.svm import SVR
-from sklearn.pipeline import make_pipeline
-from sklearn.preprocessing import StandardScaler
-from sklearn.inspection import permutation_importance
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import r2_score
-from sklearn.feature_selection import RFE
 
 # Helper Functions
 def shift_ndays(df_to_shift,ndays,name_col_to_shift, name_shifted_col, time_col):
@@ -65,11 +35,8 @@ def plot_importances(forest, varnames,plot_title):
     fig, (ax1) = plt.subplots(1, 1, figsize=(12, 8))
     ax1.barh(tree_indices, importances, height=0.7,xerr = std)
     ax1.set_yticks(tree_indices)
-    try:
-        ax1.set_yticklabels(forest.feature_names_in_)
-        ax1.set_ylim((0, len(forest.feature_names_in_)))
-    except:
-        ipdb.set_trace()
+    ax1.set_yticklabels(forest.feature_names_in_)
+    ax1.set_ylim((0, len(forest.feature_names_in_)))
     fig.tight_layout()
     plt.title(plot_title)
     plt.show()
@@ -175,7 +142,6 @@ def combine_fires(inci_name_list):
         # features = pd.merge(rave_daily, hrrr_daily[['datetime', 'hwp','Yesterday_hwp', 'rel_hwp']], how='inner', on='datetime') #this is an inner join, using the intersecting days!
         # features = pd.merge(features, hdw_daily, how='inner', on='datetime',)
         # features = pd.merge(features, fwi_daily, how='inner', on='datetime')
-        # ipdb.set_trace()
         # features = pd.merge(features, smops_daily, how='inner', on='datetime')
         # features = pd.merge(features, fuel_daily, how='inner', on='datetime')
         # features = pd.merge(features, pws_daily, how='inner', on='datetime')
@@ -1616,10 +1582,8 @@ print(data_train_nonan)
 train_cases = data_train_nonan.name.unique()
 
 for ii in range(len(train_cases)):
-    try:
-        re_plot = resample_daily(data_train_nonan[data_train_nonan['name']==train_cases[ii]], 'datetime')
-    except:
-        ipdb.set_trace()
+    re_plot = resample_daily(data_train_nonan[data_train_nonan['name']==train_cases[ii]], 'datetime')
+    
     fig, ax = plt.subplots(figsize=(20,15)) 
     fire_plot.plot(x='datetime',y=['rel_FRP'],
                             figsize=(20,6),style='o-',ax=ax)

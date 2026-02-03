@@ -38,7 +38,7 @@ def rave_timeseries(df, data_root = "/data/lthapa/data2restore/lthapa"):
     # select the locations and times we want
     dat_rave_sub = dat_rave.isel(grid_yt = fire_rave_intersection_xr['row'].values.astype(int), 
                     grid_xt = fire_rave_intersection_xr['col'].values.astype(int)).sel(
-                    time = pd.to_datetime(fire_rave_intersection_xr['12Z Start Day'].values+np.timedelta64(12,'h'))) # these should be lined up correctly
+                    time = pd.to_datetime(fire_rave_intersection_xr['12Z Start Day'].values+np.timedelta64(12,'h'))).load() # these should be lined up correctly
 
     df_rave_weighted['day'].iloc[:] = pd.to_datetime(fire_rave_intersection_xr['12Z Start Day'].values)
     df_rave_unweighted['day'].iloc[:] = pd.to_datetime(fire_rave_intersection_xr['12Z Start Day'].values)

@@ -1,10 +1,10 @@
 import geopandas as gpd
 import numpy as np
 import pandas as pd
-from joblib import Parallel, delayed
 from data.features import *
 from utils import get_repo_root, add_timestamp
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from datetime import datetime
 
@@ -76,6 +76,16 @@ args_dict_weighting = {
         'func' : smops_timeseries,
         'data_root' : '/data/lthapa/data2restore/lthapa'}
     } 
+
+weighted_funcs = {k: v["func"] for k, v in args_dict_weighting.items()}
+weighted_kwargs = {k: {kk: vv for kk, vv in v.items() if kk != "func"} for k, v in args_dict_weighting.items()}
+
+def _run_one_feature_proc(args):
+    k, df_fire_local, kwargs = args
+    t0 = datetime.now()
+    fw, fu = weighted_funcs[k](df_fire_local, **kwargs)  # NOTE: this must be importable at module scope
+    secs = (datetime.now() - t0).total_seconds()
+    return k, fw, fu, secs
 
 if __name__ == "__main__":
     years = [2019, 2020, 2021]
@@ -149,23 +159,45 @@ if __name__ == "__main__":
                 timing_dict['heatwave'] += (datetime.now() - start_h).total_seconds()
             
             ### begin weighted/unweighted features ###
-            for k, v in args_dict_weighting.items():
-                print(f"loading {k} features...")
-                start = datetime.now()
-                func = v.pop('func')
-                feature_weighted, feature_unweighted = func(df_fire, **v)
-                feature_weighted = pd.concat([feature_weighted, pd.DataFrame({'irwinID':[irwin_id]*len(feature_weighted)})], axis=1)
-                feature_unweighted = pd.concat([feature_unweighted, pd.DataFrame({'irwinID':[irwin_id]*len(feature_unweighted)})], axis=1)
-                
+            tasks = [(k, df_fire, weighted_kwargs[k]) for k in weighted_funcs.keys()]
+            max_workers = min(4, len(tasks), (os.cpu_count() or 4))
+
+            results = []
+            with ThreadPoolExecutor(max_workers=max_workers) as ex:
+                futs = [ex.submit(_run_one_feature_proc, t) for t in tasks]
+                for fut in as_completed(futs):
+                    results.append(fut.result())
+            
+            for k, feature_weighted, feature_unweighted, secs in results:
+                feature_weighted = pd.concat(
+                    [feature_weighted, pd.DataFrame({"irwinID": [irwin_id] * len(feature_weighted)})],
+                    axis=1,
+                )
+                feature_unweighted = pd.concat(
+                    [feature_unweighted, pd.DataFrame({"irwinID": [irwin_id] * len(feature_unweighted)})],
+                    axis=1,
+                )
                 features_dict[irwin_id][f"{k}_weighted"] = feature_weighted
                 features_dict[irwin_id][f"{k}_unweighted"] = feature_unweighted
-                args_dict_weighting[k]['func'] = func
+                timing_dict[k] += secs
 
-                timing_dict[k] += (datetime.now() - start).total_seconds()
-    
+            # for k, v in args_dict_weighting.items():
+            #     print(f"loading {k} features...")
+            #     start = datetime.now()
+            #     func = v.pop('func')
+            #     feature_weighted, feature_unweighted = func(df_fire, **v)
+            #     feature_weighted = pd.concat([feature_weighted, pd.DataFrame({'irwinID':[irwin_id]*len(feature_weighted)})], axis=1)
+            #     feature_unweighted = pd.concat([feature_unweighted, pd.DataFrame({'irwinID':[irwin_id]*len(feature_unweighted)})], axis=1)
+                
+            #     features_dict[irwin_id][f"{k}_weighted"] = feature_weighted
+            #     features_dict[irwin_id][f"{k}_unweighted"] = feature_unweighted
+            #     args_dict_weighting[k]['func'] = func
+
+            #     timing_dict[k] += (datetime.now() - start).total_seconds()
+
             for k, v in timing_dict.items():
                 header = f"{header}{k},{v},{irwin_id},{year}\n"
-            
+
             with open(timing_file_path, 'w') as f:
                 f.write(header)
 

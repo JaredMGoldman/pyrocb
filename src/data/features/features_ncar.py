@@ -30,8 +30,12 @@ def ncar_timeseries(df, data_root = '/data/lthapa/data2restore/lthapa'):
                         np.timedelta64(1,'D'))
     ncar_filenames,times_back_used = make_file_namelist(times,f'{data_root}/YYYY/FMC/fmc_YYYYMMDD_20Z.nc')
 
-
-    dat_ncar = xr.open_mfdataset(ncar_filenames,concat_dim='Time',combine='nested',compat='override', coords='all')
+    try:
+        dat_ncar = xr.open_mfdataset(ncar_filenames,concat_dim='Time',combine='nested',compat='override', coords='all')
+    except:
+        df_ncar_weighted['day'].iloc[:] = pd.to_datetime(fire_ncar_intersection_xr['12Z Start Day'].values)
+        df_ncar_unweighted['day'].iloc[:] = pd.to_datetime(fire_ncar_intersection_xr['12Z Start Day'].values)
+        return df_ncar_weighted, df_ncar_unweighted
     dat_ncar = dat_ncar.assign_coords({'Time': times_back_used}) #assign coords so we can select in time
     dat_ncar = dat_ncar.reindex(Time=times,method='nearest') #makes the data daily and fills in any gaps
     dat_ncar = dat_ncar.where(dat_ncar!=0) #masks out the 0s for the ocean
@@ -48,9 +52,12 @@ def ncar_timeseries(df, data_root = '/data/lthapa/data2restore/lthapa'):
         df_ncar_weighted[var] = np.nansum(fire_ncar_intersection_xr['weights'].values*dat_ncar_sub[var].values, axis=(1,2))
         df_ncar_unweighted[var] = np.nansum(fire_ncar_intersection_xr['weights'].values*dat_ncar_sub[var].values, axis=(1,2))
 
-    # this day is messed up, fill it in with NANS
-    df_ncar_weighted.iloc[df_ncar_weighted['day']=='2020-09-09'] = [pd.date_range(np.datetime64('2020-09-09'),np.datetime64('2020-09-09')+np.timedelta64(0,'D')),
-                                                           np.nan,np.nan]
-    df_ncar_unweighted.iloc[df_ncar_unweighted['day']=='2020-09-09'] = [pd.date_range(np.datetime64('2020-09-09'),np.datetime64('2020-09-09')+np.timedelta64(0,'D')),
-                                                           np.nan,np.nan]
+    try: 
+        # this day is messed up, fill it in with NANS
+        df_ncar_weighted.iloc[df_ncar_weighted['day']=='2020-09-09'] = [pd.date_range(np.datetime64('2020-09-09'),np.datetime64('2020-09-09')+np.timedelta64(0,'D')),
+                                                            np.nan,np.nan]
+        df_ncar_unweighted.iloc[df_ncar_unweighted['day']=='2020-09-09'] = [pd.date_range(np.datetime64('2020-09-09'),np.datetime64('2020-09-09')+np.timedelta64(0,'D')),
+                                                            np.nan,np.nan]
+    except:
+        pass
     return df_ncar_weighted, df_ncar_unweighted

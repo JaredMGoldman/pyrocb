@@ -49,6 +49,8 @@ def get_dir(subdir) -> Path:
     d.mkdir(parents=True, exist_ok=True)
     return d
 
+def add_timestamp(input_str):
+    return f"{input_str}_{time.strftime('%Y%m%d-%H%M')}"
 
 def save_plot(
     name: str,
@@ -65,7 +67,7 @@ def save_plot(
     base = slugify(name)
 
     if add_timestamp:
-        base = f"{base}_{time.strftime('%Y%m%d-%H%M')}"
+        base = add_timestamp(base)
 
     path = plot_dir / f"{base}.{fmt}"
 
@@ -166,7 +168,6 @@ def make_file_namelist(time,base_filename):
             filename_list = np.append(filename_list,fname)
             times_back_used = np.append(times_back_used,time[jj])
     return filename_list, times_back_used
-
 
 def generate_df(variables, length):
     df = pd.DataFrame()

@@ -35,7 +35,7 @@ def hwp_timeseries(df, hrrr_data_root = f'{ML_DATA_ROOT}/pygraf/processed_hrrr_h
         intersection_sub['weights_mask'] =xr.where(intersection_sub['weights']>0,1, np.nan)
         
         times_back = pd.date_range(start=np.datetime64(today)-np.timedelta64(1,'D'), end=np.datetime64(today)+
-                                   np.timedelta64(1,'D'),freq='H')
+                                   np.timedelta64(1,'D'),freq='h')
         
         files_back,times_back_used = make_file_namelist(times_back,f'{hrrr_data_root}/Processed_HRRR_YYYYMMDDHH_HDW_HWP.nc')
         
