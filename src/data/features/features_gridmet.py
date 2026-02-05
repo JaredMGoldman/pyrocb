@@ -25,7 +25,7 @@ def gridmet_timeseries(df, gridmet_data_root = '/data/lthapa/data2restore/lthapa
     fire_gridmet_intersection=gpd.GeoDataFrame(pd.concat(gridmet_intersections, ignore_index=True))
     fire_gridmet_intersection.set_geometry(col='geometry')  
     fire_gridmet_intersection = fire_gridmet_intersection.set_index(['12Z Start Day', 'row', 'col'])
-    fire_gridmet_intersection=fire_gridmet_intersection[~fire_gridmet_intersection.index.duplicated()]
+    fire_gridmet_intersection = fire_gridmet_intersection[~fire_gridmet_intersection.index.duplicated()]
 
     fire_gridmet_intersection_xr = fire_gridmet_intersection.to_xarray()
     fire_gridmet_intersection_xr['weights_mask'] = xr.where(fire_gridmet_intersection_xr['weights']>0,1, np.nan)
@@ -40,9 +40,12 @@ def gridmet_timeseries(df, gridmet_data_root = '/data/lthapa/data2restore/lthapa
     dat_gridmet = dat_gridmet.assign_coords({'Time': times_back_used}) #assign coords so we can select in time
     
     #select the locations and times we want
-    dat_gridmet_sub = dat_gridmet.isel(lat = fire_gridmet_intersection_xr['row'].values, 
-                    lon = fire_gridmet_intersection_xr['col'].values).sel(
-                    Time = pd.to_datetime(fire_gridmet_intersection_xr['12Z Start Day'].values))#these should be lined up correctly
+    try:
+        dat_gridmet_sub = dat_gridmet.isel(lat = fire_gridmet_intersection_xr['row'].values, 
+                        lon = fire_gridmet_intersection_xr['col'].values).sel(
+                        Time = pd.to_datetime(fire_gridmet_intersection_xr['12Z Start Day'].values))#these should be lined up correctly
+    except:
+        return df_gridmet_weighted, df_gridmet_unweighted
 
     df_gridmet_weighted['day'].iloc[:] = pd.to_datetime(fire_gridmet_intersection_xr['12Z Start Day'].values)
     df_gridmet_unweighted['day'].iloc[:] = pd.to_datetime(fire_gridmet_intersection_xr['12Z Start Day'].values)

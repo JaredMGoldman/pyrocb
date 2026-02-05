@@ -47,3 +47,13 @@
         * Generate a number of plotting scripts
         * determine appropriate propogation of FRP estimates
      
+
+## Dry Run ideas
+* given lat and lon, date of fire ignition and ignition date => create a forecast of FRP growth
+    * pull viirs data and HRRR
+    * look back one day
+
+* Send email to SDS state about reprocessed RAVE data availability and time frame
+    * https://sites.google.com/view/rave-emission/products?authuser=0
+        * fangjun.li@sdstate.edu
+        * xiaoyang.zhang@sdsstate.edu 

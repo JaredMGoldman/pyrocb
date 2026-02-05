@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+import os
 import geopandas as gpd
 from os.path import exists
 from joblib import dump, Parallel, delayed
@@ -17,6 +18,23 @@ import xarray as xr
 PLOTS_DIR = "outputs/plots"
 MODELS_DIR = "outputs/models"
 ML_DATA_ROOT = "/data/lthapa/data2restore/lthapa/ML_daily"
+CLIENTS_PATH = "src/data/clients"
+FIRMS_KEY_FNAME = "firms.key"
+
+def set_env_var(var_name, key_file):
+    """
+    Sets the environment variable specified by var_name to the value 
+    from the key_file
+    
+    :param var_name: name of environment variable
+    :param key_file: path to file containing key value
+
+    :returns value from key file
+    """
+    with open(key_file, 'r') as f:
+        var_val = f.read()
+    os.environ[var_name] = var_val
+    return var_val
 
 def get_repo_root() -> Path:
     """
