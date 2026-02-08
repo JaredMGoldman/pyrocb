@@ -57,3 +57,5 @@
     * https://sites.google.com/view/rave-emission/products?authuser=0
         * fangjun.li@sdstate.edu
         * xiaoyang.zhang@sdsstate.edu 
+
+* confirm that lat/lon assigning in xarrays works as intended, mapping x-vals to lats and y-vals to lons

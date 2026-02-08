@@ -7,13 +7,15 @@ import geopandas as gpd
 from os.path import exists
 from joblib import dump, Parallel, delayed
 from pathlib import Path
-from shapely.geometry import Polygon
+from shapely.geometry import Polygon, Point
 import subprocess
 import sklearn
 import time
 import re
 import matplotlib.pyplot as plt
 import xarray as xr
+import rasterio
+import pyproj
 
 PLOTS_DIR = "outputs/plots"
 MODELS_DIR = "outputs/models"
@@ -206,3 +208,28 @@ def parallel_intersection_labels(df, label):
     intersection_xr['weights_mask'] = xr.where(intersection_xr['weights']>0,1, np.nan)
    
     return intersection_xr
+
+def add_lonlat_coords(ds):
+    """
+    Takes a rasterio formatted xarray Dataset with x and y projection values instead of lat/lon
+    and returns a Dataset with lat/lon coordinates in addition to x/y vals
+    
+    :param ds: Description
+    """
+    transform = ds.rio.transform()
+    ny, nx = ds.sizes["y"], ds.sizes["x"]
+
+    rows, cols = np.meshgrid(np.arange(ny), np.arange(nx), indexing="ij")
+    xs, ys = rasterio.transform.xy(transform, rows, cols)
+    xs = np.asarray(xs)
+    ys = np.asarray(ys)
+
+    proj = pyproj.Transformer.from_crs(ds.rio.crs, "EPSG:4326", always_xy=True)
+    lon, lat = proj.transform(xs, ys)
+    lon = lon.reshape(ds.y.size,ds.x.size)
+    lat = lat.reshape(ds.y.size,ds.x.size)
+    
+    return ds.assign_coords(
+        longitude=(("y","x"), lon),
+        latitude=(("y","x"), lat)
+    )
