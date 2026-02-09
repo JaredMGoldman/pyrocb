@@ -1,149 +1,285 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional, Literal, Tuple, Dict
-import os
-from io import StringIO, BytesIO
+from datetime import date
+from io import StringIO
+from typing import Dict, Iterable, List, Literal, Optional, Sequence, Tuple, Union
 from utils import FIRMS_KEY_FNAME, CLIENTS_PATH, get_repo_root, set_env_var
 
+import os
+import numpy as np
 import pandas as pd
+import xarray as xr
 import geopandas as gpd
 import requests
-from zipfile import ZipFile
 from requests.adapters import HTTPAdapter
+from shapely.geometry import Polygon, MultiPolygon
 from urllib3.util.retry import Retry
 
-FirmsSources = Literal["LANDSAT_NRT", # [US/Canada only] (LANDSAT Near Real-Time, Real-Time and Ultra Real-Time *)
-    "MODIS_NRT", # (MODIS Near Real-Time, Real-Time and Ultra Real-Time *)
-    "MODIS_SP", # (MODIS Standard Processing)
-    "VIIRS_NOAA20_NRT", # (VIIRS NOAA-20 Near Real-Time, Real-Time and Ultra Real-Time *)
-    "VIIRS_NOAA20_SP", # (VIIRS NOAA-20 Standard Processing)
-    "VIIRS_NOAA21_NRT", # (VIIRS NOAA-21 Near Real-Time, Real-Time and Ultra Real-Time *)
-    "VIIRS_SNPP_NRT", # (VIIRS Suomi-NPP Near Real-Time, Real-Time and Ultra Real-Time *)
-    "VIIRS_SNPP_SP" # (VIIRS Suomi-NPP Standard Processing)
+
+FirmsSources = Literal[
+    "LANDSAT_NRT",
+    "MODIS_NRT",
+    "MODIS_SP",
+    "VIIRS_NOAA20_NRT",
+    "VIIRS_NOAA20_SP",
+    "VIIRS_NOAA21_NRT",
+    "VIIRS_SNPP_NRT",
+    "VIIRS_SNPP_SP",
 ]
 
-FirmsSensor = Literal[
-    "c6.1", # (MODIS Near Real-Time, Real-Time and Ultra Real-Time *)
-    "landsat", # (LANDSAT Near Real-Time, Real-Time and Ultra Real-Time *)
-    "suomi-npp-viirs-c2", # (VIIRS Suomi-NPP Near Real-Time, Real-Time and Ultra Real-Time *)
-    "noaa-20-viirs-c2",# (VIIRS NOAA-20 Near Real-Time, Real-Time and Ultra Real-Time *)
-    "noaa-21-viirs-c2", # (VIIRS NOAA-21 Near Real-Time, Real-Time and Ultra Real-Time *)
-]
-FirmsRegion = Literal[
-    "canada",
-    "alaska",
-    "usa_contiguous_and_hawaii"
-]
-FirmsSpans = Literal[
-    "24h", "48h", "72h", "7d"
-]
+Geom = Union[Polygon, MultiPolygon]
+
 
 @dataclass(frozen=True)
 class FirmsClient:
     map_key: str
     base_url: str = "https://firms.modaps.eosdis.nasa.gov"
-    timeout: int = 60  # seconds
+    timeout: int = 60
+    max_retries: int = 5
+    backoff_factor: float = 0.8
 
     def __post_init__(self):
         if not self.map_key:
             raise ValueError("FIRMS MAP_KEY is required.")
 
     @classmethod
-    def from_env(cls) -> "FirmsClient":
-        return cls(map_key=os.environ.get("FIRMS_MAP_KEY", ""))
+    def from_env(cls, env_var: str = "FIRMS_MAP_KEY") -> "FirmsClient":
+        return cls(map_key=os.environ.get(env_var, ""))
 
+    # -------------------------
+    # Public API (xarray)
+    # -------------------------
+    def query_area_polygon_xr(
+        self,
+        polygon: Geom,
+        start: Union[str, date, pd.Timestamp],
+        end: Union[str, date, pd.Timestamp],
+        sources: Sequence[FirmsSources],
+        *,
+        crs: str = "EPSG:4326",
+        return_by_source: bool = False,
+    ) -> Union[xr.Dataset, Dict[str, xr.Dataset]]:
+        """
+        Returns an xarray.Dataset of point detections inside polygon/date range.
+
+        Output shape:
+          dims: obs
+          coords: latitude(obs), longitude(obs), time(obs) (if parseable)
+          data_vars: remaining FIRMS columns + 'source' (if merged)
+        """
+        start_ts = pd.Timestamp(start).normalize()
+        end_ts = pd.Timestamp(end).normalize()
+        if end_ts < start_ts:
+            raise ValueError("end must be >= start")
+
+        west, south, east, north = self._polygon_bounds_wsen(polygon)
+        windows = self._chunk_date_range(start_ts, end_ts, max_days=5)
+
+        session = self._session()
+
+        out: Dict[str, xr.Dataset] = {}
+        for src in sources:
+            frames = []
+            for w_start, w_end in windows:
+                day_range = int((w_end - w_start).days) + 1
+                df = self._area_csv_df(
+                    session=session,
+                    source=src,
+                    bbox_wsen=(west, south, east, north),
+                    day_range=day_range,
+                    date=w_start.strftime("%Y-%m-%d"),
+                )
+                frames.append(df)
+
+            df_src = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+            if df_src.empty:
+                out[src] = self._empty_dataset()
+                continue
+
+            df_src = self._dedupe_df(df_src)
+
+            # Clip precisely to polygon (still in lon/lat)
+            df_src = self._clip_df_to_polygon(df_src, polygon)
+
+            # Build time coordinate if possible
+            df_src = self._add_time_column_if_possible(df_src)
+
+            out[src] = df_src.set_index(['time','latitude','longitude']).to_xarray()
+            
+        if return_by_source:
+            return out
+
+        # Merge sources into one obs dataset
+        ds_all = xr.concat([out[s] for s in out.keys()], dim="obs") if out else self._empty_dataset()
+        return ds_all
+
+    # -------------------------
+    # HTTP session w/ retry
+    # -------------------------
     def _session(self) -> requests.Session:
-        # Build a session with retry/backoff (pythonic & production-friendly)
         s = requests.Session()
         retry = Retry(
-            total=5,
-            backoff_factor=0.8,
+            total=self.max_retries,
+            backoff_factor=self.backoff_factor,
             status_forcelist=(429, 500, 502, 503, 504),
             allowed_methods=("GET",),
             raise_on_status=False,
         )
-        s.mount("https://", HTTPAdapter(max_retries=retry))
-        s.mount("http://", HTTPAdapter(max_retries=retry))
+        adapter = HTTPAdapter(max_retries=retry)
+        s.mount("https://", adapter)
+        s.mount("http://", adapter)
         return s
-    
-    def fire_detection(
-            self,
-            sensor: FirmsSensor,
-            region: FirmsRegion,
-            datespan: FirmsSpans,
-            crs: str = "EPSG:4326"
-    ) -> Dict[str, gpd.GeoDataFrame]:
-        """
-        Fetch FIRMS detections in CSV for a bounding box.
-        - sensor: (west, south, east, north)
-        - region: alaska, canada, usa & hawaii
-        - date: optional start date (YYYY-MM-DD). If None, returns most recent.
-        """
 
-        # URL template per FIRMS US/Canada docs
-        # /usfs/api/kml_fire_footprints/?region=[REGION]&date_span=[DATE_SPAN]&sensor=[SENSOR]
-        path = f"/usfs/api/kml_fire_footprints/?region={region}&date_span={datespan}&sensor={sensor}"
-        url = self.base_url.rstrip("/") + path
-
-        with self._session() as s:
-            res = s.get(url, timeout=self.timeout)
-            # FIRMS returns KML; errors can come back as HTML/text
-            if res.status_code != 200:
-                raise RuntimeError(f"FIRMS request failed ({res.status_code}): {res.text[:300]}")
-
-        with ZipFile(BytesIO(res.content)) as z:
-            # Find the first .kml inside the KMZ (often "doc.kml")
-            kml_names = [n for n in z.namelist() if n.lower().endswith(".kml")]
-            if not kml_names:
-                raise ValueError("KMZ contains no .kml file.")
-            kml_name = kml_names[0]
-
-            kml_bytes = z.read(kml_name)
-
-        # geopandas can read KML from a BytesIO in many environments
-        # Explicit driver helps
-        layers = gpd.list_layers(BytesIO(kml_bytes)).name.to_list()
-        return {layer :  gpd.read_file(BytesIO(kml_bytes), driver="KML", layer=layer) for layer in layers}
-
-    def area_csv(
+    # -------------------------
+    # FIRMS request -> DataFrame
+    # -------------------------
+    def _area_csv_df(
         self,
+        session: requests.Session,
         source: FirmsSources,
         bbox_wsen: Tuple[float, float, float, float],
-        day_range: int = 1,
-        date: Optional[str] = None,  # "YYYY-MM-DD"
-        crs: str = "EPSG:4326"
-    ) -> gpd.GeoDataFrame:
-        """
-        Fetch FIRMS detections in CSV for a bounding box.
-        - bbox_wsen: (west, south, east, north)
-        - day_range: 1..5 per docs
-        - date: optional start date (YYYY-MM-DD). If None, returns most recent.
-        """
+        day_range: int,
+        date: str,
+    ) -> pd.DataFrame:
         if not (1 <= day_range <= 5):
             raise ValueError("day_range must be 1..5 for FIRMS USFS Area API.")
 
         west, south, east, north = bbox_wsen
         area = f"{west},{south},{east},{north}"
 
-        # URL template per FIRMS US/Canada docs
-        # /usfs/api/area/csv/[MAP_KEY]/[SOURCE]/[AREA_COORDINATES]/[DAY_RANGE](/[DATE])
-        path = f"/usfs/api/area/csv/{self.map_key}/{source}/{area}/{day_range}"
-        if date:
-            path += f"/{date}"
-
+        path = f"/usfs/api/area/csv/{self.map_key}/{source}/{area}/{day_range}/{date}"
         url = self.base_url.rstrip("/") + path
 
-        with self._session() as s:
-            r = s.get(url, timeout=self.timeout)
-            # FIRMS returns CSV; errors can come back as HTML/text
-            if r.status_code != 200:
-                raise RuntimeError(f"FIRMS request failed ({r.status_code}): {r.text[:300]}")
-            df = pd.read_csv(StringIO(r.text))
-            return gpd.GeoDataFrame(df, geometry = gpd.points_from_xy(df["longitude"], df["latitude"]), crs=crs)
-        
-        
+        r = session.get(url, timeout=self.timeout)
+        if r.status_code != 200:
+            raise RuntimeError(f"FIRMS request failed ({r.status_code}): {r.text[:300]}")
+
+        df = pd.read_csv(StringIO(r.text))
+        if not df.empty:
+            if "longitude" not in df.columns or "latitude" not in df.columns:
+                raise KeyError(f"Missing latitude/longitude in FIRMS CSV. Columns: {list(df.columns)[:30]}")
+        return df
+
+    # -------------------------
+    # Utilities
+    # -------------------------
+    @staticmethod
+    def _polygon_bounds_wsen(polygon: Geom) -> Tuple[float, float, float, float]:
+        minx, miny, maxx, maxy = polygon.bounds
+        return (float(minx), float(miny), float(maxx), float(maxy))
+
+    @staticmethod
+    def _chunk_date_range(
+        start_ts: pd.Timestamp,
+        end_ts: pd.Timestamp,
+        max_days: int = 5,
+    ) -> List[Tuple[pd.Timestamp, pd.Timestamp]]:
+        windows = []
+        cur = start_ts
+        while cur <= end_ts:
+            w_end = min(cur + pd.Timedelta(days=max_days - 1), end_ts)
+            windows.append((cur, w_end))
+            cur = w_end + pd.Timedelta(days=1)
+        return windows
+
+    @staticmethod
+    def _dedupe_df(df: pd.DataFrame) -> pd.DataFrame:
+        key_cols = [c for c in ["acq_date", "acq_time", "latitude", "longitude", "satellite"] if c in df.columns]
+        if key_cols:
+            return df.drop_duplicates(subset=key_cols).reset_index(drop=True)
+        return df.drop_duplicates().reset_index(drop=True)
+
+    @staticmethod
+    def _clip_df_to_polygon(df: pd.DataFrame, polygon: Geom) -> pd.DataFrame:
+        if df.empty:
+            return df
+
+        gdf = gpd.GeoDataFrame(
+            df,
+            geometry=gpd.points_from_xy(df["longitude"], df["latitude"]),
+            crs="EPSG:4326",
+        )
+        poly_gdf = gpd.GeoDataFrame({"geometry": [polygon]}, crs="EPSG:4326")
+        clipped = gpd.sjoin(gdf, poly_gdf, predicate="within", how="inner").drop(columns="index_right")
+        clipped = pd.DataFrame(clipped.drop(columns=["geometry"]))
+        return clipped.reset_index(drop=True)
+
+    @staticmethod
+    def _add_time_column_if_possible(df: pd.DataFrame) -> pd.DataFrame:
+        """
+        FIRMS area CSV commonly provides:
+          - acq_date (YYYY-MM-DD) or (YYYYMMDD)
+          - acq_time (HHMM as string/int)
+        We'll construct a datetime64[ns] column named 'time' if present.
+        """
+        if df.empty:
+            return df
+
+        if "acq_date" in df.columns and "acq_time" in df.columns:
+            # normalize types
+            d = df["acq_date"].astype(str)
+            t = df["acq_time"].astype(str).str.zfill(4)
+            # Try common date formats
+            # If acq_date is like '2025-08-01', concatenation will be '2025-08-011250' -> parse with %Y-%m-%d%H%M
+            try:
+                df["time"] = pd.to_datetime(d + t, format="%Y-%m-%d%H%M", errors="coerce")
+            except Exception:
+                df["time"] = pd.NaT
+
+            # fallback if date is YYYYMMDD
+            if df["time"].isna().all():
+                df["time"] = pd.to_datetime(d + t, format="%Y%m%d%H%M", errors="coerce")
+
+        return df
+
+    @staticmethod
+    def _df_to_xr(df: pd.DataFrame, add_source: Optional[str] = None) -> xr.Dataset:
+        """
+        Convert FIRMS detections DataFrame to xr.Dataset with dim 'obs'.
+        """
+        import ipdb; ipdb.set_trace()
+        if df.empty:
+            return FirmsClient._empty_dataset()
+
+        df2 = df.copy()
+
+        if add_source is not None:
+            df2["source"] = add_source
+
+        coords = {
+            "latitude": ("time", df2["latitude"].to_numpy(dtype=float)),
+            "longitude": ("time", df2["longitude"].to_numpy(dtype=float)),
+        }
+
+        if "time" in df2.columns and pd.api.types.is_datetime64_any_dtype(df2["time"]):
+            coords["time"] = ("obs", df2["time"].to_numpy())
+
+        # Put remaining columns as data_vars (excluding lat/lon, and time if used as coord)
+        drop_cols = {"latitude", "longitude"}
+        if "time" in coords:
+            drop_cols.add("time")
+
+        data_vars = {}
+        for c in df2.columns:
+            if c in drop_cols:
+                continue
+            data_vars[c] = ("obs", df2[c].to_numpy())
+
+        return xr.Dataset(data_vars=data_vars, coords=coords)
+
+    @staticmethod
+    def _empty_dataset() -> xr.Dataset:
+        return xr.Dataset(
+            coords={
+                "obs": np.array([], dtype=int),
+                "latitude": ("obs", np.array([], dtype=float)),
+                "longitude": ("obs", np.array([], dtype=float)),
+            }
+        )
+    
 if __name__ == "__main__":
+    from shapely.geometry import box
     firms_key_path = os.path.join(get_repo_root(),
                                   CLIENTS_PATH,
                                   FIRMS_KEY_FNAME)
@@ -152,17 +288,15 @@ if __name__ == "__main__":
 
     client = FirmsClient.from_env()
 
-    df_area = client.area_csv(
-        source="VIIRS_NOAA20_SP",
-        bbox_wsen=(-85, -57, -32, 14),
-        day_range=2,
-        date="2025-08-01",
-    )
-    print(df_area.head())
+    poly = box(-119.05, 33.60, -117.50, 34.85)
 
-    df_detection = client.fire_detection(
-        sensor = "c6.1",
-        region = "canada",
-        datespan='24h'
+    ds = client.query_area_polygon_xr(
+        polygon=poly,
+        start="2025-08-01",
+        end="2025-08-20",
+        sources=["VIIRS_SNPP_SP", "VIIRS_NOAA20_SP"],
     )
-    [print(f"layer {k}:\n{v.head()}") for k, v in df_detection.items()]
+
+    print(ds)
+    print(ds.coords)
+    print(ds.data_vars)

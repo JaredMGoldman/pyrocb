@@ -1,99 +1,180 @@
-# https://gis1.servirglobal.net/data/esi/4WK/2017/
 from __future__ import annotations
 
-from pathlib import Path
-import requests
-import numpy as np
-import geopandas as gpd
-import rasterio
-from rasterio.features import shapes
-from shapely.geometry import shape, Point
+from dataclasses import dataclass
 from datetime import date
+from pathlib import Path
+from typing import Iterable, Sequence, Union
 
-class ESIClient:
-    def __init__(self, year: str, month: int, day: int):
-        self.base_url = "https://gis1.servirglobal.net/data/esi/4WK/"
-        self.year = year
-        self.fname = f"DFPPM_4WK_{year}{self.day_of_year(month, day)}.tif"
+import numpy as np
+import pandas as pd
+import requests
+import xarray as xr
+import rioxarray  # requires rasterio + GDAL
+import geopandas as gpd
+from shapely.geometry import Polygon, MultiPolygon
 
-    def download_file(self, out_dir: Path, chunk_size: int = 1 << 20) -> Path:
-        out_dir.mkdir(parents=True, exist_ok=True)
-        with requests.get(f"{self.base_url}/{self.year}/{self.fname}", stream=True, timeout=120) as r:
+
+Geom = Union[Polygon, MultiPolygon]
+
+
+@dataclass
+class ESI4WKClient:
+    """
+    Query SERVIR ESI 4-week GeoTIFFs by polygon + date range and return an xarray.Dataset.
+
+    Base directory format:
+      https://gis1.servirglobal.net/data/esi/4WK/YYYY/
+
+    File format assumed:
+      {VAR}_4WK_YYYYDDD.tif
+      Example: DFPPM_4WK_2017008.tif
+    """
+    base_url: str = "https://gis1.servirglobal.net/data/esi/4WK"
+    cache_dir: Union[str, Path] = "esi_cache"
+    timeout_s: int = 120
+
+    def __post_init__(self):
+        self.cache_dir = Path(self.cache_dir)
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self._session = requests.Session()
+
+    # ----------------------------
+    # Public API
+    # ----------------------------
+    def query(
+        self,
+        polygon: Geom,
+        start: Union[str, date, pd.Timestamp],
+        end: Union[str, date, pd.Timestamp],
+        variables: Sequence[str] = ("DFPPM",),
+        *,
+        clip: bool = True,
+        drop: bool = True,
+    ) -> xr.Dataset:
+        """
+        Parameters
+        ----------
+        polygon : shapely Polygon/MultiPolygon in EPSG:4326 (lon/lat)
+        start, end : date-like
+        variables : list of variable prefixes (e.g., ["DFPPM"]) mapping to filenames like
+                    "{var}_4WK_YYYYDDD.tif"
+        clip : if True, clip each raster to polygon
+        drop : if True, drop pixels outside polygon (mask + crop)
+
+        Returns
+        -------
+        xr.Dataset with dims: time, y, x
+        data_vars: one per entry in `variables`
+        """
+        start_ts = pd.Timestamp(start).normalize()
+        end_ts = pd.Timestamp(end).normalize()
+        if end_ts < start_ts:
+            raise ValueError("end must be >= start")
+
+        # Snap each day to the 1+7k DOY bins, then unique them
+        snapped_dates = self._snapped_dates(start_ts, end_ts)
+
+        per_time_dsets = []
+        for d in snapped_dates:
+            per_var = []
+            for var in variables:
+                tif = self._download_tif(var, d)
+                da = self._open_tif_as_dataarray(tif, var_name=var)
+
+                if clip:
+                    da = self._clip_dataarray_to_polygon(da, polygon, drop=drop)
+
+                # ensure we have y/x dims (rioxarray uses y/x)
+                da = da.squeeze(drop=True)
+
+                per_var.append(da.to_dataset(name=var))
+
+            ds_day = xr.merge(per_var).expand_dims(time=[np.datetime64(d.date())])
+            per_time_dsets.append(ds_day)
+
+        if not per_time_dsets:
+            raise FileNotFoundError("No datasets were loaded for the requested time range.")
+
+        ds = xr.concat(per_time_dsets, dim="time")
+        return ds
+
+    # ----------------------------
+    # Internals
+    # ----------------------------
+    def _snapped_dates(self, start_ts: pd.Timestamp, end_ts: pd.Timestamp) -> list[pd.Timestamp]:
+        days = pd.date_range(start_ts, end_ts, freq="D")
+        snapped = {self._snap_to_1_plus_7k(d) for d in days}
+        return sorted(snapped)
+
+    @staticmethod
+    def _snap_to_1_plus_7k(d: pd.Timestamp) -> pd.Timestamp:
+        doy = d.timetuple().tm_yday
+        snapped_doy = 1 + ((doy - 1) // 7 + 1) * 7
+        return pd.Timestamp(year=d.year, month=1, day=1) + pd.Timedelta(days=snapped_doy - 1)
+
+    @staticmethod
+    def _doy_str(d: pd.Timestamp) -> str:
+        return f"{d.timetuple().tm_yday:03d}"
+
+    def _remote_url(self, var: str, d: pd.Timestamp) -> str:
+        year = d.year
+        doy = self._doy_str(d)
+        fname = f"{var}_4WK_{year}{doy}.tif"
+        return f"{self.base_url}/{year}/{fname}"
+
+    def _local_path(self, var: str, d: pd.Timestamp) -> Path:
+        year = d.year
+        doy = self._doy_str(d)
+        fname = f"{var}_4WK_{year}{doy}.tif"
+        p = self.cache_dir / str(year) / fname
+        p.parent.mkdir(parents=True, exist_ok=True)
+        return p
+
+    def _download_tif(self, var: str, d: pd.Timestamp) -> Path:
+        url = self._remote_url(var, d)
+        out_path = self._local_path(var, d)
+
+        if out_path.exists() and out_path.stat().st_size > 0:
+            return out_path
+
+        with self._session.get(url, stream=True, timeout=self.timeout_s) as r:
             r.raise_for_status()
-            with open(out_dir / self.fname, "wb") as f:
-                for chunk in r.iter_content(chunk_size=chunk_size):
+            with open(out_path, "wb") as f:
+                for chunk in r.iter_content(chunk_size=1 << 20):
                     if chunk:
                         f.write(chunk)
-        return out_dir / self.fname
+        return out_path
 
-    def day_of_year(self, month: int, day: int) -> int:
-        d = date(self.year, month, day)
-        doy = d.timetuple().tm_yday
+    @staticmethod
+    def _open_tif_as_dataarray(tif_path: Path, var_name: str) -> xr.DataArray:
+        # rioxarray returns dims (band, y, x); we drop band.
+        da = rioxarray.open_rasterio(tif_path, masked=True).squeeze("band", drop=True)
+        da.name = var_name
+        return da
 
-        snapped = 1 + ((doy - 1) // 7) * 7
-        return f"{snapped:03d}"
+    @staticmethod
+    def _clip_dataarray_to_polygon(da: xr.DataArray, polygon: Geom, drop: bool = True) -> xr.DataArray:
+        # rioxarray expects a GeoDataFrame/GeoSeries geometry with CRS.
+        gdf = gpd.GeoDataFrame({"geometry": [polygon]}, crs="EPSG:4326")
 
-    def raster_to_points_gdf(self, tif_path: Path, band: int = 1, stride: int = 1) -> gpd.GeoDataFrame:
-        """
-        Convert raster pixels to point GeoDataFrame (centroid points).
-        stride=1 keeps all pixels; stride=5 keeps every 5th pixel (much smaller).
-        """
-        with rasterio.open(tif_path) as src:
-            arr = src.read(band)
-            nodata = src.nodata
-            transform = src.transform
-            crs = src.crs
+        # Reproject polygon into raster CRS if needed
+        if da.rio.crs is not None and str(da.rio.crs).upper() != "EPSG:4326":
+            gdf = gdf.to_crs(da.rio.crs)
 
-            # Downsample by stride to keep size sane
-            arr_s = arr[::stride, ::stride]
-            rows, cols = np.where(~np.isnan(arr_s) if nodata is None else (arr_s != nodata))
-
-            # Map back to full-res indices
-            rows = rows * stride
-            cols = cols * stride
-
-            values = arr[rows, cols]
-
-            # pixel center coords
-            xs, ys = rasterio.transform.xy(transform, rows, cols, offset="center")
-            geom = [Point(x, y) for x, y in zip(xs, ys)]
-
-        gdf = gpd.GeoDataFrame({"value": values}, geometry=geom, crs=crs)
-        return gdf
-
-
-    def raster_to_polygons_gdf(self, tif_path: Path, band: int = 1) -> gpd.GeoDataFrame:
-        """
-        Polygonize raster into polygons for each contiguous region of equal value.
-        Warning: can still be large for continuous rasters.
-        """
-        with rasterio.open(tif_path) as src:
-            arr = src.read(band)
-            nodata = src.nodata
-            mask = np.ones(arr.shape, dtype=bool) if nodata is None else (arr != nodata)
-
-            geoms = []
-            vals = []
-            for geom, val in shapes(arr, mask=mask, transform=src.transform):
-                geoms.append(shape(geom))
-                vals.append(val)
-
-            gdf = gpd.GeoDataFrame({"value": vals}, geometry=geoms, crs=src.crs)
-        return gdf
-
-
+        return da.rio.clip(gdf.geometry, gdf.crs, drop=drop)
+    
 if __name__ == "__main__":
-    year = 2018
-    month = 6
-    day = 11
+    from shapely.geometry import box
 
-    EC = ESIClient(year, month, day)
-    tif_path = EC.download_file(Path("data"))
+    client = ESI4WKClient(cache_dir="esi_cache")
 
-    # Option A: points (use stride to reduce size)
-    gdf_pts = EC.raster_to_points_gdf(tif_path)
-    print("Points:", gdf_pts.shape, gdf_pts.crs)
+    poly = box(-119.05, 33.60, -117.50, 34.85)  # LA bbox
+    ds = client.query(
+        polygon=poly,
+        start="2017-01-01",
+        end="2017-02-01",
+        variables=["DFPPM"],   # add more prefixes if they exist in that directory
+    )
 
-    # Option B: polygons (can be huge if raster has many unique values)
-    gdf_poly = EC.raster_to_polygons_gdf(tif_path)
-    print("Polygons:", gdf_poly.shape, gdf_poly.crs)
+    print(ds)
+    print(ds["DFPPM"].shape)

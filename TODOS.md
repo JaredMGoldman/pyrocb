@@ -59,3 +59,25 @@
         * xiaoyang.zhang@sdsstate.edu 
 
 * confirm that lat/lon assigning in xarrays works as intended, mapping x-vals to lats and y-vals to lons
+
+### Clients To Build
+1. Elevation
+2. Loading
+3. Resources
+4. PWS
+    - only static map from 2021, assumed static in OG paper
+5. RAVE
+    - check in with developers at sds State
+6. SMOPS
+    - data available until 2024...
+    - https://essic.umd.edu/creating-a-climate-data-record-with-soil-moisture/
+    - Apparently available with SMOPScdr but can't locate the dataset ^^
+
+### Built clients
+1. FIRMS
+2. HRRR
+3. MODIS
+4. GridMET
+5. ESI
+6. NCAR FMC
+    - missing range from (Oct 2021 - April 2023)
