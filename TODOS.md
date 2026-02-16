@@ -61,12 +61,29 @@
 * confirm that lat/lon assigning in xarrays works as intended, mapping x-vals to lats and y-vals to lons
 
 ## Data Info
+### USA & CAN & 2025
+1. FIRMS
+    - USA & Canada
+2. HRRR
+    - HRRR is USA Only
+    - Canadian Product: https://www.pivotalweather.com/model.php?m=hrdps
+        - HERBIE NOT WORKING... 
+        - https://eccc-msc.github.io/open-data/msc-data/nwp_hrdps/readme_hrdps_en/
+3. MODIS
+    - US & Canada
+4. ESI
+    - Worldwide
+5. RAVE
+    - check in with developers at sds State
+    
 ### USA & Canada
 1. FIRMS
     - USA & Canada
 2. HRRR
     - HRRR is USA Only
     - Canadian Product: https://www.pivotalweather.com/model.php?m=hrdps
+        - HERBIE NOT WORKING... 
+        - https://eccc-msc.github.io/open-data/msc-data/nwp_hrdps/readme_hrdps_en/
 3. MODIS
     - US & Canada
 4. ESI

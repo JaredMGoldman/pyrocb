@@ -18,7 +18,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, Sequence, Optional, Union, Literal
+from typing import Iterable, Sequence, Optional, Union, Literal, Tuple
 
 import numpy as np
 import pandas as pd
@@ -33,21 +33,56 @@ from herbie import Herbie, FastHerbie
 Geom = Union[Polygon, MultiPolygon]
 Freq = Literal["1H", "1h", "60min"]
 
+RegionMode = Literal["auto", "force_hrrr", "force_ifs"]
 
 @dataclass
-class HRRRPolygonHerbie:
-    """
-    Query HRRR (surface product by default) via Herbie and return an xarray.Dataset
-    clipped to grid cells that intersect a polygon.
-
-    Typical usage: HRRR analyses (fxx=0) for each hour in a time range.
-    """
-    product: str = "sfc"        # HRRR surface fields product :contentReference[oaicite:3]{index=3}
-    fxx: int = 0                # lead time in hours (0 = analysis)
+class HRRRClient:
+    product: str = "sfc"
+    fxx: int = 0
     model: str = "hrrr"
-    freq: Freq = "1H"
-    remove_grib: bool = False   # keep GRIB file (useful if you re-open/cached)
-    n_jobs: int = 4             # FastHerbie threads
+    freq: Freq = "1h"
+    remove_grib: bool = False
+    n_jobs: int = 4
+
+    # NEW: IFS fallback config
+    region_mode: RegionMode = "auto"
+    ifs_model: str = "ifs"
+    ifs_product: str = "oper"
+    ifs_init_freq: str = "12H"  # IFS oper runs at 00z & 12z
+
+    # NEW: CONUS bbox heuristic (lon/lat)
+    conus_bbox: Tuple[float, float, float, float] = (-125.0, 24.0, -66.0, 50.0)
+
+    def _polygon_in_conus(self, polygon: Geom) -> bool:
+        minx, miny, maxx, maxy = polygon.bounds
+        west, south, east, north = self.conus_bbox
+        return (minx >= west) and (maxx <= east) and (miny >= south) and (maxy <= north)
+
+    def _choose_model_product_and_times(
+        self, polygon: Geom, start_ts: pd.Timestamp, end_ts: pd.Timestamp
+    ) -> tuple[str, str, pd.DatetimeIndex]:
+        """
+        Returns (model, product, init_times).
+
+        - HRRR: hourly times (as you currently do)
+        - IFS oper: init times every 12h (00/12) :contentReference[oaicite:3]{index=3}
+        """
+        if self.region_mode == "force_hrrr":
+            use_ifs = False
+        elif self.region_mode == "force_ifs":
+            use_ifs = True
+        else:
+            use_ifs = not self._polygon_in_conus(polygon)
+
+        if not use_ifs:
+            times = pd.date_range(start=start_ts, end=end_ts, freq=self.freq)
+            return self.model, self.product, times
+
+        # IFS fallback
+        # Use 12-hourly init times; Herbie will fetch grib for each init+fxx
+        # (Your fxx still applies.)
+        times = pd.date_range(start=start_ts.floor("12H"), end=end_ts.ceil("12H"), freq=self.ifs_init_freq)
+        return self.ifs_model, self.ifs_product, times
 
     def query(
         self,
@@ -80,34 +115,44 @@ class HRRRPolygonHerbie:
             raise ValueError("end must be >= start")
 
         # HRRR is hourly; build list of initialization times (commonly UTC)
-        times = pd.date_range(start=start_ts, end=end_ts, freq=self.freq)
+        model, product, times = self._choose_model_product_and_times(polygon, start_ts, end_ts)
 
         if len(times) == 0:
-            raise ValueError("Empty time range after applying freq.")
+            raise ValueError("Empty time range after applying model-specific frequency.")
 
-        # Combine requested variable patterns into one regex string for Herbie.xarray
         search = self._build_search_string(variables)
-        # Use FastHerbie to manage many Herbie objects and open/concat efficiently :contentReference[oaicite:5]{index=5}
+
         FH = FastHerbie(
             times,
-            model=self.model,
-            product=self.product,
-            fxx=[self.fxx]*len(times)
+            model=model,
+            product=product,
+            fxx=[self.fxx] * len(times),
         )
 
-        # Open only the GRIB messages matching `search` into xarray :contentReference[oaicite:6]{index=6}
         dses = FH.xarray(search, remove_grib=self.remove_grib)
+        return self._stack_dses(dses, time_dim)
 
-        # Standardize time coordinate name if needed
-        # import ipdb; ipdb.set_trace()        
-
-        # Clip to polygon-intersecting grid cells
-        dses = [self._clip_to_polygon(ds, polygon, bbox_first=bbox_first) for ds in dses]
-
-        dses_stacked = [ds.stack(tcell=(time_dim, "y", "x")) for ds in dses]
-        ds_stacked = xr.concat(dses_stacked, dim='tcell') 
-
-        return ds_stacked
+    @staticmethod
+    def _stack_dses(dses, time_dim):
+        def _find_lat_lon_var(ds):
+            lat_var = ""
+            lon_var = ""
+            if "latitude" in ds.dims:
+                lat_var = "latitude"
+            elif "y" in ds.dims:
+                lat_var = "y"
+            if "longitude" in ds.dims:
+                lon_var = "longitude"
+            elif "x" in ds.dims:
+                lon_var = "x"
+            return lat_var, lon_var
+            
+        if type(dses) is xr.Dataset:
+            lat_var, lon_var = _find_lat_lon_var(dses)
+            return dses.stack(tcell=(time_dim, lat_var, lon_var))
+        else:
+            dses_stacked = [ds.stack(tcell=(time_dim, _find_lat_lon_var(ds)[0], _find_lat_lon_var(ds)[1])) for ds in dses]
+            return xr.concat(dses_stacked, dim='tcell') 
 
     @staticmethod
     def _build_search_string(variables: Sequence[str]) -> str:
@@ -150,50 +195,64 @@ class HRRRPolygonHerbie:
 
     def _clip_to_polygon(self, ds: xr.Dataset, polygon: Geom, bbox_first: bool = True) -> xr.Dataset:
         lat_name, lon_name = self._infer_lat_lon(ds)
+
+        # Wrap lon to [-180,180]
+        ds = ds.assign_coords({lon_name: (((ds[lon_name] + 180) % 360) - 180)})
+
         lat = ds[lat_name]
         lon = ds[lon_name]
 
-        # Identify spatial dims from lat/lon
-        if lat.ndim != 2 or lon.ndim != 2:
-            raise ValueError(
-                "Expected 2D latitude/longitude grids. If you have 1D lat/lon, "
-                "this clipper needs a small adjustment."
-            )
-        y_dim, x_dim = lat.dims
-
-        poly = polygon
-        if isinstance(poly, MultiPolygon):
-            # union is OK, but prep() is faster for repeated contains checks
-            poly = poly.union(poly)  # noop-ish; keeps type stable
-
-        # Optional fast bbox crop first (reduces mask work)
-        if bbox_first:
-            minx, miny, maxx, maxy = polygon.bounds
-            # mask bbox in lat/lon space
-            bbox_mask = (lon >= minx) & (lon <= maxx) & (lat >= miny) & (lat <= maxy)
-            # keep rows/cols that have any True
-            keep_y = bbox_mask.any(dim=x_dim)
-            keep_x = bbox_mask.any(dim=y_dim)
-            ds = ds.isel({y_dim: np.where(keep_y.values)[0], x_dim: np.where(keep_x.values)[0]})
-            lat = ds[lat_name]
-            lon = ds[lon_name]
-
-        # Polygon mask (intersecting cells via centroid-in-polygon test)
-        # Note: If you need strict *cell intersects polygon* (not centroid),
-        # you’d build cell polygons. Centroid mask is the usual fast approximation.
         poly_prep = prep(polygon)
+        minx, miny, maxx, maxy = polygon.bounds
 
-        lonv = lon.values
-        latv = lat.values
-        mask = np.zeros(lonv.shape, dtype=bool)
-        # vectorized-ish loop over rows to avoid huge Python object creation
-        for j in range(lonv.shape[0]):
-            mask[j, :] = [poly_prep.contains(Point(lonv[j, i], latv[j, i])) for i in range(lonv.shape[1])]
+        # -------------------------
+        # Case 1: 2D lat/lon (HRRR typical)
+        # -------------------------
+        if lat.ndim == 2 and lon.ndim == 2:
+            y_dim, x_dim = lat.dims
 
-        # Apply mask: set outside to NaN, then drop fully-empty rows/cols
-        ds = ds.where(xr.DataArray(mask, dims=(y_dim, x_dim)), drop=True)
+            if bbox_first:
+                bbox_mask = (lon >= minx) & (lon <= maxx) & (lat >= miny) & (lat <= maxy)
+                keep_y = bbox_mask.any(dim=x_dim)
+                keep_x = bbox_mask.any(dim=y_dim)
+                ds = ds.isel({y_dim: np.where(keep_y.values)[0], x_dim: np.where(keep_x.values)[0]})
+                lat = ds[lat_name]
+                lon = ds[lon_name]
 
-        return ds
+            lonv = lon.values
+            latv = lat.values
+            mask = np.zeros(lonv.shape, dtype=bool)
+            for j in range(lonv.shape[0]):
+                mask[j, :] = [poly_prep.contains(Point(lonv[j, i], latv[j, i])) for i in range(lonv.shape[1])]
+
+            return ds.where(xr.DataArray(mask, dims=(y_dim, x_dim)), drop=True)
+
+        # -------------------------
+        # Case 2: 1D lat/lon (common for IFS global grids)
+        # -------------------------
+        if lat.ndim == 1 and lon.ndim == 1:
+            lat_dim = lat.dims[0]
+            lon_dim = lon.dims[0]
+
+            if bbox_first:
+                # handle descending latitude arrays
+                lat_asc = float(lat[0]) < float(lat[-1])
+                lat_slice = slice(miny, maxy) if lat_asc else slice(maxy, miny)
+                lon_slice = slice(minx, maxx) if float(lon[0]) < float(lon[-1]) else slice(maxx, minx)
+                ds = ds.sel({lat_dim: lat_slice, lon_dim: lon_slice})
+                lat = ds[lat_name]
+                lon = ds[lon_name]
+
+            # Build a 2D mask over the selected 1D grid
+            lon2d, lat2d = np.meshgrid(lon.values, lat.values)
+            mask = np.zeros(lon2d.shape, dtype=bool)
+            for j in range(lon2d.shape[0]):
+                mask[j, :] = [poly_prep.contains(Point(lon2d[j, i], lat2d[j, i])) for i in range(lon2d.shape[1])]
+
+            mask_da = xr.DataArray(mask, dims=(lat_dim, lon_dim))
+            return ds.where(mask_da, drop=True)
+
+        raise ValueError(f"Unsupported lat/lon shapes: lat.ndim={lat.ndim}, lon.ndim={lon.ndim}")
 
 
 if __name__ == "__main__":
@@ -201,9 +260,9 @@ if __name__ == "__main__":
 
     la_poly = box(-119.05, 33.60, -117.50, 34.85)
 
-    client = HRRRPolygonHerbie(product="sfc", fxx=0, n_jobs=6)
+    client = HRRRClient(product="sfc", fxx=0, n_jobs=6)
 
-    ds = client.query(
+    ds_us = client.query(
         polygon=la_poly,
         start="2025-07-01 00:00",
         end="2025-07-01 06:00",
@@ -214,4 +273,15 @@ if __name__ == "__main__":
         ],
     )
 
-    print(ds)
+    print(ds_us)
+
+    # Outside CONUS -> should auto-switch to IFS oper
+    poly_ocean = box(10, 35, 15, 40)  # Mediterranean-ish
+
+    ds_ocean = client.query(
+        polygon=poly_ocean,
+        start="2025-07-01 00:00",
+        end="2025-07-02 00:00",
+        variables=[":2t:", ":tcwv:"],
+    )
+    print(ds_ocean)
