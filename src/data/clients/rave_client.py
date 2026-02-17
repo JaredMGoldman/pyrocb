@@ -6,6 +6,7 @@ from typing import Dict, List, Optional, Sequence, Tuple, Union
 import re
 
 import numpy as np
+import os
 import pandas as pd
 import requests
 import xarray as xr
@@ -15,6 +16,9 @@ from shapely.prepared import prep
 
 Geom = Union[Polygon, MultiPolygon]
 
+cached_file_lb = pd.Timestamp("07-01-2019")
+cached_file_ub = pd.Timestamp("12-31-2023")
+cached_file_base = "/home/jaredgoldman/data/RAVE"
 
 @dataclass
 class RAVEHrlyEmiss3kmClient:
@@ -31,7 +35,7 @@ class RAVEHrlyEmiss3kmClient:
 
     # common coordinate name fallbacks
     lat_names: Tuple[str, ...] = ("lat", "latitude", "LAT", "Latitude", "y", "grid_latt")
-    lon_names: Tuple[str, ...] = ("lon", "longitude", "LON", "Longitude", "x", "grid_latt")
+    lon_names: Tuple[str, ...] = ("lon", "longitude", "LON", "Longitude", "x", "grid_lont")
     time_names: Tuple[str, ...] = ("time", "valid_time", "datetime", "date")
 
     _fname_re: re.Pattern = re.compile(
@@ -79,7 +83,12 @@ class RAVEHrlyEmiss3kmClient:
             raise ValueError("end must be >= start")
 
         # Collect candidate file URLs by scanning only the needed YYYY/MM dirs
-        files = self._collect_files_for_range(start_ts, end_ts)
+        is_cached = start_ts >= cached_file_lb and end_ts <= cached_file_ub
+
+        if is_cached:
+            files = self._get_cached_fnames(start_ts, end_ts) 
+        else:
+            files = self._collect_files_for_range(start_ts, end_ts)
 
         if not files:
             raise FileNotFoundError("No RAVE files found overlapping the requested time window.")
@@ -87,7 +96,11 @@ class RAVEHrlyEmiss3kmClient:
 
         dsets: List[xr.Dataset] = []
         for meta in files:
-            local = self._download(url = meta['url'], year=meta["year"], month=meta["month"])
+            if is_cached:
+                local = meta["path"]
+            else:
+                local = self._download(url = meta['url'], year=meta["year"], month=meta["month"])
+
             ds = xr.open_dataset(local)
 
             # variable subset
@@ -135,6 +148,23 @@ class RAVEHrlyEmiss3kmClient:
                             'day' : day} \
                                   for fname in names if f"s{year:04d}{month:02d}{day:02d}" in fname]
         return filtered_names
+    
+    def _get_cached_fnames(self, start_ts: pd.Timestamp, end_ts: pd.Timestamp) -> List[Dict]:
+        # consider months overlapping the window
+        start_month = pd.Timestamp(start_ts.year, start_ts.month, 1)
+        end_month = pd.Timestamp(end_ts.year, end_ts.month, 1)
+        months = pd.date_range(start_month, end_month, freq="MS")
+        fnames = []
+        for m in months:
+            year, month, day = int(m.year), int(m.month), int(m.day)
+            this_dir = os.path.join(cached_file_base, str(year), str(month))
+            [name] = [fname for fname in os.listdir(this_dir) if f"s{year:04d}{month:02d}{day:02d}" in fname]
+
+            fnames.append({ 'path' : os.path.join(this_dir, name), 
+                        'year': year,
+                        'month' : month,
+                        'day' : day})
+        return fnames
 
     def _collect_files_for_range(self, start_ts: pd.Timestamp, end_ts: pd.Timestamp) -> List[Dict]:
         # consider months overlapping the window
@@ -206,12 +236,16 @@ class RAVEHrlyEmiss3kmClient:
         poly_minx, _, poly_maxx, _ = polygon.bounds
         polygon_is_180 = (poly_minx < 0) or (poly_maxx <= 180)
 
+        lonv = lon.values
+        ds_is_360 = (np.nanmin(lonv) >= 0) and (np.nanmax(lonv) > 180)
         if lon.ndim == 1:
-            lonv = lon.values
-            ds_is_360 = (np.nanmin(lonv) >= 0) and (np.nanmax(lonv) > 180)
             if polygon_is_180 and ds_is_360:
                 newlon = ((lonv + 180) % 360) - 180
                 ds = ds.assign_coords({lon_name: newlon}).sortby(lon_name)
+        elif lon.ndim == 2:
+            if polygon_is_180 and ds_is_360:
+                newlon = ((lonv + 180) % 360) - 180
+                ds = ds.assign_coords({lon_name: (lon.dims, newlon)})
 
         return ds
 
@@ -311,3 +345,14 @@ if __name__ == "__main__":
 
     print(ds)
     print(ds.time.values[:3])
+
+    # can_poly = box(-105.5, 50.5, -104.0, 51.5)
+    # ds = client.query(
+    #     polygon=can_poly,
+    #     start="2010-10-01 00:00",
+    #     end="2019-10-01 12:00",
+    #     variables=["PM25", "FRP_MEAN", "FRE"],  # replace with actual names in your files
+    # )
+
+    # print("can", ds)
+    # print("can", ds.time.values[:3])
