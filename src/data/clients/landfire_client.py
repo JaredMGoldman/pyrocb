@@ -25,7 +25,7 @@ Geom = Union["Polygon", "MultiPolygon"]
 
 
 @dataclass
-class LFPSClient:
+class LANDFIREClient:
     """
     LANDFIRE Product Service (LFPS) client.
 
@@ -276,7 +276,7 @@ if __name__ == "__main__":
     poly = box(-120.5, 35.0, -118.0, 37.0)  # lon/lat
     vars_ = ["ELEV2020", "ASP2020"]  # product codes
 
-    client = LFPSClient(cache_dir="data/lfps")
+    client = LANDFIREClient(cache_dir="data/lfps")
 
     ds = client.query(
         polygon=poly,

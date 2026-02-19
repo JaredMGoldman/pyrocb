@@ -14,6 +14,8 @@ import xarray as xr
 from shapely.geometry import Polygon, MultiPolygon
 from shapely.prepared import prep
 
+from utils import CACHE_DIR
+
 Geom = Union[Polygon, MultiPolygon]
 
 cached_file_lb = pd.Timestamp("07-01-2019")
@@ -21,7 +23,7 @@ cached_file_ub = pd.Timestamp("12-31-2023")
 cached_file_base = "/home/jaredgoldman/data/RAVE"
 
 @dataclass
-class RAVEHrlyEmiss3kmClient:
+class RAVEClient:
     """
     RAVE hourly emissions (3km) client:
       - lists month directories for a date range
@@ -30,7 +32,7 @@ class RAVEHrlyEmiss3kmClient:
       - returns xr.Dataset concatenated over time
     """
     base_url: str = "https://www.ospo.noaa.gov/pub/Blended/RAVE/RAVE-HrlyEmiss-3km"
-    cache_dir: Union[str, Path] = "rave_cache/RAVE-HrlyEmiss-3km"
+    cache_dir: Union[str, Path] = os.path.join(CACHE_DIR, "rave_cache")
     timeout_s: int = 120
 
     # common coordinate name fallbacks
@@ -120,7 +122,6 @@ class RAVEHrlyEmiss3kmClient:
             ds = self._subset_to_polygon(ds, polygon, drop_outside=drop_outside, bbox_first=bbox_first)
 
             dsets.append(ds)
-
         if not dsets:
             raise RuntimeError("No datasets remained after subsetting.")
 
@@ -334,13 +335,13 @@ if __name__ == "__main__":
 
     poly = box(-122.0, 36.0, -118.0, 39.0)  # CA-ish box
 
-    client = RAVEHrlyEmiss3kmClient(cache_dir="data/rave_3km")
+    client = RAVEClient()
 
     ds = client.query(
         polygon=poly,
         start="2024-10-01 00:00",
         end="2024-10-01 12:00",
-        variables=["PM25", "FRP_MEAN", "FRE"],  # replace with actual names in your files
+        variables=None,  # replace with actual names in your files
     )
 
     print(ds)

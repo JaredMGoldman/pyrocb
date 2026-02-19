@@ -17,12 +17,6 @@ import xarray as xr
 import rasterio
 import pyproj
 
-PLOTS_DIR = "outputs/plots"
-MODELS_DIR = "outputs/models"
-ML_DATA_ROOT = "/data/lthapa/data2restore/lthapa/ML_daily"
-CLIENTS_PATH = "src/data/clients"
-FIRMS_KEY_FNAME = "firms.key"
-
 def set_env_var(var_name, key_file):
     """
     Sets the environment variable specified by var_name to the value 
@@ -233,3 +227,10 @@ def add_lonlat_coords(ds):
         longitude=(("y","x"), lon),
         latitude=(("y","x"), lat)
     )
+
+PLOTS_DIR = os.path.join(get_repo_root(),"outputs","plots")
+MODELS_DIR = os.path.join(get_repo_root(),"outputs","models")
+ML_DATA_ROOT = os.path.join(f"{os.sep}data","lthapa","data2restore","lthapa","ML_daily")
+CLIENTS_DIR = os.path.join(get_repo_root(),"src","data","clients")
+FIRMS_KEY_FNAME = "firms.key"
+CACHE_DIR = os.path.join(CLIENTS_DIR,"cache")

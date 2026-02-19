@@ -17,7 +17,7 @@ from shapely.prepared import prep
 # Optional but recommended for HDF-EOS -> xarray
 import rioxarray  # noqa: F401  (pip install rioxarray rasterio; conda-forge often easiest)
 import rasterio
-from utils import get_repo_root, add_lonlat_coords
+from utils import CLIENTS_DIR, add_lonlat_coords, CACHE_DIR
 import os
 
 
@@ -35,8 +35,8 @@ class MODISClient:
     """
     product: str = "MYD14A1"
     collection: str = "61"
-    key_file: Union[str, Path] = os.path.join(get_repo_root(),"src","data","clients","modis.key")
-    cache_dir: Union[str, Path] = "laads_cache"
+    key_file: Union[str, Path] = os.path.join(CLIENTS_DIR, "modis.key")
+    cache_dir: Union[str, Path] = os.path.join(CACHE_DIR, "laads_cache")
     timeout_s: int = 120
 
     base_url: str = "https://ladsweb.modaps.eosdis.nasa.gov/archive/allData"
@@ -339,11 +339,7 @@ class MODISClient:
 if __name__ == "__main__":
     from shapely.geometry import box
 
-    client = MODISClient(
-        product="MYD14A1",
-        collection="61",
-        cache_dir="modis_cache",
-    )
+    client = MODISClient()
 
     # Los Angeles-ish bounding polygon (lon/lat)
     poly = box(-119.05, 33.60, -117.50, 34.85)
@@ -352,7 +348,7 @@ if __name__ == "__main__":
         polygon=poly,
         start="2025-07-01",
         end="2025-07-03",
-        variables=["FireMask"],  # change to the SDS names you want
+        variables=None,  # change to the SDS names you want
     )
 
     print(ds)

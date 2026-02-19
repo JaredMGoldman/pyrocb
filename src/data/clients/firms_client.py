@@ -50,11 +50,12 @@ class FirmsClient:
     # -------------------------
     # Public API (xarray)
     # -------------------------
-    def query_area_polygon_xr(
+    def query(
         self,
         polygon: Geom,
         start: Union[str, date, pd.Timestamp],
         end: Union[str, date, pd.Timestamp],
+        variables: List[str],
         sources: Sequence[FirmsSources],
         *,
         crs: str = "EPSG:4326",
@@ -105,7 +106,7 @@ class FirmsClient:
             # Build time coordinate if possible
             df_src = self._add_time_column_if_possible(df_src)
 
-            out[src] = df_src.set_index(['time','latitude','longitude']).to_xarray()
+            out[src] = df_src.set_index(['time','latitude','longitude']).to_xarray()[variables]
             
         if return_by_source:
             return out
@@ -290,10 +291,11 @@ if __name__ == "__main__":
 
     poly = box(-119.05, 33.60, -117.50, 34.85)
 
-    ds = client.query_area_polygon_xr(
+    ds = client.query(
         polygon=poly,
         start="2025-08-01",
         end="2025-08-20",
+        vars = ['frp'],
         sources=["VIIRS_SNPP_SP", "VIIRS_NOAA20_SP"],
     )
 

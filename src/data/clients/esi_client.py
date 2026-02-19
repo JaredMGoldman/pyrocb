@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Iterable, Sequence, Union
 
 import numpy as np
+import os
 import pandas as pd
 import requests
 import xarray as xr
@@ -13,12 +14,13 @@ import rioxarray  # requires rasterio + GDAL
 import geopandas as gpd
 from shapely.geometry import Polygon, MultiPolygon
 
+from utils import CACHE_DIR
 
 Geom = Union[Polygon, MultiPolygon]
 
 
 @dataclass
-class ESI4WKClient:
+class ESIClient:
     """
     Query SERVIR ESI 4-week GeoTIFFs by polygon + date range and return an xarray.Dataset.
 
@@ -30,7 +32,7 @@ class ESI4WKClient:
       Example: DFPPM_4WK_2017008.tif
     """
     base_url: str = "https://gis1.servirglobal.net/data/esi/4WK"
-    cache_dir: Union[str, Path] = "esi_cache"
+    cache_dir: Union[str, Path] = os.path.join(CACHE_DIR, "esi_cache")
     timeout_s: int = 120
 
     def __post_init__(self):
@@ -166,7 +168,7 @@ class ESI4WKClient:
 if __name__ == "__main__":
     from shapely.geometry import box
 
-    client = ESI4WKClient(cache_dir="esi_cache")
+    client = ESIClient()
 
     poly = box(-119.05, 33.60, -117.50, 34.85)  # LA bbox
     ds = client.query(
