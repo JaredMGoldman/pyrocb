@@ -227,10 +227,13 @@ def add_lonlat_coords(ds):
         longitude=(("y","x"), lon),
         latitude=(("y","x"), lat)
     )
-
-PLOTS_DIR = os.path.join(get_repo_root(),"outputs","plots")
-MODELS_DIR = os.path.join(get_repo_root(),"outputs","models")
 ML_DATA_ROOT = os.path.join(f"{os.sep}data","lthapa","data2restore","lthapa","ML_daily")
-CLIENTS_DIR = os.path.join(get_repo_root(),"src","data","clients")
-FIRMS_KEY_FNAME = "firms.key"
+
+OUTPUTS_DIR = os.path.join(get_repo_root(), "outputs")
+PLOTS_DIR = os.path.join(OUTPUTS_DIR, "plots")
+MODELS_DIR = os.path.join(OUTPUTS_DIR, "models")
+FEATURE_OUTPUT_DIR = os.path.join(OUTPUTS_DIR, "features")
+DATA_DIR = os.path.join(get_repo_root(), "src", "data")
+CLIENTS_DIR = os.path.join(DATA_DIR,"clients")
 CACHE_DIR = os.path.join(CLIENTS_DIR,"cache")
+FIRMS_KEY_FNAME = "firms.key"

@@ -20,6 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable, Sequence, Optional, Union, Literal, Tuple
 
+import logging
 import numpy as np
 import pandas as pd
 import xarray as xr
@@ -28,7 +29,6 @@ from shapely.geometry import Polygon, MultiPolygon, Point
 from shapely.prepared import prep
 
 from herbie import Herbie, FastHerbie
-
 
 Geom = Union[Polygon, MultiPolygon]
 Freq = Literal["1H", "1h", "60min"]
@@ -131,6 +131,7 @@ class HRRRClient:
                 product=product,
                 fxx=self.fxx,
             )
+            print(f"search vars: {search}")
             dses.append(self.combine_dses(FH.xarray(search, remove_grib=self.remove_grib), time_dim))
         
         return xr.merge(dses, join = 'outer')
@@ -266,26 +267,36 @@ if __name__ == "__main__":
 
     client = HRRRClient(product="sfc", fxx=0, n_jobs=6)
 
-    ds_us = client.query(
-        polygon=la_poly,
-        start="2025-07-01 00:00",
-        end="2025-07-01 06:00",
-        variables=[
-            ":TMP:2 m",      # 2m temperature
-            ":RH:2 m",       # 2m relative humidity
-            ":(?:UGRD|VGRD):10 m",  # 10m wind components (regex)
-        ],
-    )
+    # ds_us = client.query(
+    #     polygon=la_poly,
+    #     start="2025-07-01 00:00",
+    #     end="2025-07-01 06:00",
+    #     variables=[
+    #         ":TMP:2 m",      # 2m temperature
+    #         ":RH:2 m",       # 2m relative humidity
+    #         ":(?:UGRD|VGRD):10 m",  # 10m wind components (regex)
+    #     ],
+    # )
 
-    print(ds_us)
+    # print(ds_us)
 
     # Outside CONUS -> should auto-switch to IFS oper
-    poly_ocean = box(10, 35, 15, 40)  # Mediterranean-ish
-
+    central_canada_poly = box(-105.5, 52.5, -104.0, 54.0)  # Mediterranean-ish
+    vars = [
+        ":tp:",
+        ":u:1000",
+        ":v:1000",
+        ":r:",
+        ":2t:",
+        ":sd:",
+        ":ssw:",
+        ":2d:",
+    ]
     ds_ocean = client.query(
-        polygon=poly_ocean,
+        polygon=central_canada_poly,
         start="2025-07-01 00:00",
-        end="2025-07-02 00:00",
-        variables=[":2t:", ":tcwv:"],
+        end="2025-07-01 12:00",
+        variables=vars,
     )
     print(ds_ocean)
+    import ipdb; ipdb.set_trace()

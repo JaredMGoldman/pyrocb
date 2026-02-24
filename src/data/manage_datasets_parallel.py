@@ -2,28 +2,57 @@ from __future__ import annotations
 
 import data.clients as clients
 
+import argparse
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
-
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Dict, List, Tuple, Any, Optional
+from typing import Dict, List, Any
 
 import numpy as np
+import os
 import pandas as pd
+from random import sample
 import geopandas as gpd
 from shapely import box, contains
+from utils import FEATURE_OUTPUT_DIR, DATA_DIR
 
+parser = argparse.ArgumentParser(
+                    prog='ParallelDataDownloader',
+                    description='Download fire features as a csv')
+parser.add_argument('--debug', action = 'store_true', dest = 'debug', default= False,
+                    help = "turn debug mode on to run dataset generation in series")
+parser.add_argument('-o', '--out', type = str, dest = 'o', 
+                    default = "average_polygon_features_parallel.csv",
+                    help = f"path to output file relative to {FEATURE_OUTPUT_DIR}")
+parser.add_argument('-c', '--cp', type = str, dest = 'c', default = "cp_na.csv",
+                    help = f"path to `cp_na.csv` file with fire information relative to {DATA_DIR}")
+parser.add_argument('-p', '--poly', type = str, dest = 'p', default = "cp_poly.gpkg",
+                    help = f"path to `cp_poly.gpkg` file with fire polygon information relative to {DATA_DIR}")
+parser.add_argument('-w', '--num_workers', type = int, dest = 'num_workers', default = 8,
+                    help = "maximum number of workers to use")
+parser.add_argument('-f', '--flush_n_fires', type = int, dest = 'flush_n_fires', default = 50,
+                    help = "frequency that fire features are written to output file")
 
 # -----------------------------
 # Helpers
 # -----------------------------
-
+def varname_map(name, var_name):
+    if not 'hrrr' in name:
+        return f"{name}_{var_name}"
+    can_map = { 'r' : 'rh', 't2m' : 't', 'd2m' : 'dpt'}
+    us_map = { 'r2' : 'rh', 't2m' : 't', 'd2m' : 'dpt',
+              'u10' : 'u', 'v10' : 'v'}
+    if 'can' in name:
+        if var_name in can_map.keys():
+            return f"hrrr_{can_map[var_name]}"
+        return f"hrrr_{var_name}"
+    if var_name in us_map.keys():
+        return f"hrrr_{us_map[var_name]}"
+    return f"hrrr_{var_name}"
 
 def is_conus(perim):
     conus_polygon = box(-125.0, 24.0, -66.5, 49.5)
-    if contains(conus_polygon, perim):
-        return True
-    return False
+    return contains(conus_polygon, perim)
 
 def skip_fire(start, end, perim):
     skip_lb = pd.Timestamp("2021-01-01") 
@@ -40,8 +69,6 @@ def skip_fire(start, end, perim):
     return False
 
 def time_bins(times):
-    dates = times.astype("datetime64[D]")
-
     unique_dates, inverse = np.unique(times.astype("datetime64[D]"), 
                                       return_inverse=True)
 
@@ -60,9 +87,10 @@ def compute_daily_features_for_fire(
     this_poly_gdf,
     this_cp_df,
     client_query_specs,  # <-- dict/specs, not client instances (see below)
+    DEBUG_MODE,
     feature_start_pad="1D",
-    feature_end_pad="1D",
-) -> List[Dict[str, Any]]:
+    feature_end_pad="1D"
+    ) -> List[Dict[str, Any]]:
     """
     Runs ALL client queries for one fire and returns list of day_dict rows.
     Designed to be executed in a worker process.
@@ -83,36 +111,50 @@ def compute_daily_features_for_fire(
     end   = fire_tmax + pd.Timedelta(feature_end_pad)
 
     # --- query clients in parallel (threads: network I/O) ---
-    def run_one_client(spec):
-        name = spec["name"]
-        vars_ = spec["vars"]
+    def run_one_client_safe(spec):
+        try:
+            name = spec["name"]
+            vars_ = spec["vars"]
 
-        # conus gating example you had
-        if is_conus(fire_poly) and name == "can_hrrr":
+            # conus gating example you had
+            if is_conus(fire_poly) and name == "can_hrrr":
+                print("fire is conus and model is canadian")
+                return None
+            elif not is_conus(fire_poly) and name == "us_hrrr":
+                print("fire is not conus and model is us")
+                return None
+
+            # IMPORTANT: create the client INSIDE the worker (avoid pickling sessions, locks, etc.)
+            client_ctor = spec["client_ctor"]
+            client_kwargs = spec.get("client_kwargs", {})
+            client = client_ctor(**client_kwargs)
+            
+            ds = client.query(
+                polygon=fire_poly,
+                start=start,
+                end=end,
+                variables=vars_,
+            )
+            return (name, ds)
+        except Exception as e:
+            name = spec.get("name", "unknown")
+            print(f"[WARN] {name} failed: {e}")
             return None
 
-        # IMPORTANT: create the client INSIDE the worker (avoid pickling sessions, locks, etc.)
-        client_ctor = spec["client_ctor"]
-        client_kwargs = spec.get("client_kwargs", {})
-        client = client_ctor(**client_kwargs)
-        
-        ds = client.query(
-            polygon=fire_poly,
-            start=start,
-            end=end,
-            variables=vars_,
-        )
-        return (name, ds)
-
     ds_list = []
-
-    # Thread pool: good for requests/HTTP, Herbie downloads, etc.
-    with ThreadPoolExecutor(max_workers=min(8, len(client_query_specs))) as tpex:
-        futures = [tpex.submit(run_one_client, spec) for spec in client_query_specs]
-        for f in as_completed(futures):
-            out = f.result()
+    if DEBUG_MODE:
+        for spec in client_query_specs:
+            out = run_one_client_safe(spec)
             if out is not None:
                 ds_list.append(out)
+    else:
+    # Thread pool: good for requests/HTTP, Herbie downloads, etc.
+        with ThreadPoolExecutor(max_workers=min(8, len(client_query_specs))) as tpex:        
+            futures = [tpex.submit(run_one_client_safe, spec) for spec in client_query_specs]
+            for f in as_completed(futures):
+                out = f.result()
+                if out is not None:
+                    ds_list.append(out)
 
     if not ds_list:
         return []
@@ -139,23 +181,35 @@ def compute_daily_features_for_fire(
             # compute mean for each var
             for var_name in ds.data_vars:
                 arr = ds[var_name].isel(time=idx).values
-                day_dict[f"{name}_{var_name}"] = float(np.nanmean(arr))
+                day_dict[varname_map(name, var_name)] = float(np.nanmean(arr))
 
         data_per_day.append(day_dict)
 
     return data_per_day
 
+def compute_daily_features_for_fire_safe(
+        cp_idx,
+        this_poly_gdf,
+        this_cp_df,
+        client_query_specs,  # <-- dict/specs, not client instances (see below)
+        DEBUG_MODE,
+        feature_start_pad="1D",
+        feature_end_pad="1D"
+    ) -> List[Dict[str, Any]]:
+    try:
+        return compute_daily_features_for_fire(
+            cp_idx,
+            this_poly_gdf,
+            this_cp_df,
+            client_query_specs,  # <-- dict/specs, not client instances (see below)
+            DEBUG_MODE,
+            feature_start_pad="1D",
+            feature_end_pad="1D"
+        )
+    except Exception as e:
+        print(f"[WARN] {cp_idx} fire failed: {e}")
+        return None
 
-# -----------------------------
-# Main driver
-# -----------------------------
-
-feature_file = "/home/jaredgoldman/dev/pyrocb/src/data/average_polygon_features_parallel.csv"
-cp = pd.read_csv("data/cp_na.csv")
-cp_poly = gpd.read_file("data/cp_poly.gpkg")
-
-# IMPORTANT: don't pass instantiated clients into processes.
-# Pass constructors + kwargs so workers create their own.
 client_query_specs = [
     {"name": "esi", "client_ctor": clients.ESIClient, "client_kwargs": {}, "vars": ["DFPPM"]},
     {"name": "firms", "client_ctor": clients.FirmsClient, "client_kwargs": {}, "vars": ["frp"]},
@@ -167,76 +221,110 @@ client_query_specs = [
         ":RH:2 m",
         ":MSTAV:",
         ":WEASD:",
-        ":APCP:.*:(?:0-1|[1-9]\\d*-\\d+) hour",
     ]},
     {"name": "can_hrrr", "client_ctor": clients.HRRRClient, "client_kwargs": {}, "vars": [
         ":tp:",
-        ":10si:",
         ":r:",
+        ":u:1000",
+        ":v:1000",
         ":2t:",
-        ":sd:",
-        ":ssw:",
         ":2d:",
     ]},
     {"name": "modis", "client_ctor": clients.MODISClient, "client_kwargs": {}, "vars": ["MaxFRP", "FireMask"]},
     {"name": "rave", "client_ctor": clients.RAVEClient, "client_kwargs": {}, "vars": ["FRP_MEAN", "FRP_SD", "FRE", "PM25"]},
 ]
 
-# Pre-split cp indices in the parent
-cp_ids = list(cp.cp.unique()[::-1])
-all_fires = len(cp_ids)
+def main(cp: pd.DataFrame, 
+         feature_file: str, 
+         cp_poly: gpd.GeoDataFrame,
+         flush_fires: int = 50,
+         max_workers: int = 8,
+         DEBUG_MODE: bool = False):
+    # -----------------------------
+    # Main driver
+    # -----------------------------
+    # IMPORTANT: don't pass instantiated clients into processes.
+    # Pass constructors + kwargs so workers create their own.
+    # Pre-split cp indices in the parent
+    cp_ids = list(cp.cp.unique()[::-1])
+    all_fires = len(cp_ids)
+    random_cps = sample(cp_ids, all_fires)
+    
+    # Optional: resume behavior by loading existing CSV keys
+    written_header = False
+    if pd.io.common.file_exists(feature_file):
+        written_header = True
 
-# Optional: resume behavior by loading existing CSV keys
-written_header = False
-if pd.io.common.file_exists(feature_file):
-    written_header = True
+    start_time = datetime.now()
 
-start_time = datetime.now()
+    # Chunked write buffer
+    buffer_rows: List[Dict[str, Any]] = []
+    flush_every_n_fires = flush_fires  # tune this
+    max_workers = max_workers # tune: start with 4-8 depending on CPU/network
 
-# Chunked write buffer
-buffer_rows: List[Dict[str, Any]] = []
-flush_every_n_fires = 50  # tune this
-max_workers = 6           # tune: start with 4-8 depending on CPU/network
+    # Use processes for per-fire parallelism (bigger jobs)
+    with ProcessPoolExecutor(max_workers=max_workers) as ppex:
+        futures = []
+        for cp_idx in random_cps:
+            this_poly = cp_poly[cp_poly.cp == cp_idx]
+            this_cp = cp[cp.cp == cp_idx]
+            if DEBUG_MODE:
+                compute_daily_features_for_fire(
+                        cp_idx,
+                        this_poly,
+                        this_cp,
+                        client_query_specs,
+                        DEBUG_MODE=DEBUG_MODE)
+            else:
+                futures.append(
+                    ppex.submit(
+                        compute_daily_features_for_fire,
+                        cp_idx,
+                        this_poly,
+                        this_cp,
+                        client_query_specs,
+                        DEBUG_MODE,
+                    )
+                )
 
-# Use processes for per-fire parallelism (bigger jobs)
-with ProcessPoolExecutor(max_workers=max_workers) as ppex:
-    futures = []
-    for cp_idx in cp_ids:
-        this_poly = cp_poly[cp_poly.cp == cp_idx]
-        this_cp = cp[cp.cp == cp_idx]
+        if DEBUG_MODE:
+            import ipdb; ipdb.set_trace()
 
-        futures.append(
-            ppex.submit(
-                compute_daily_features_for_fire,
-                cp_idx,
-                this_poly,
-                this_cp,
-                client_query_specs,
-            )
-        )
+        done_count = 0
+        for f in as_completed(futures):
+            if f is None:
+                done_count += 1
+                continue
+            rows = f.result()
+            done_count += 1
 
-    done_count = 0
-    for f in as_completed(futures):
-        rows = f.result()
-        done_count += 1
+            if rows:
+                buffer_rows.extend(rows)
 
-        if rows:
-            buffer_rows.extend(rows)
+            # periodic flush
+            if done_count % flush_every_n_fires == 0:
+                if buffer_rows:
+                    df_out = pd.DataFrame(buffer_rows)
 
-        # periodic flush
-        if done_count % flush_every_n_fires == 0:
-            if buffer_rows:
-                df_out = pd.DataFrame(buffer_rows)
+                    # append mode, write header once
+                    df_out.to_csv(feature_file, mode="a", header=not written_header, index=False)
+                    written_header = True
+                    buffer_rows.clear()
 
-                # append mode, write header once
-                df_out.to_csv(feature_file, mode="a", header=not written_header, index=False)
-                written_header = True
-                buffer_rows.clear()
+                elapsed = datetime.now() - start_time
+                print(f"{int(done_count/all_fires*100)}% fires done in {int(elapsed.total_seconds()/60)} min")
 
-            elapsed = datetime.now() - start_time
-            print(f"{int(done_count/all_fires*100)}% fires done in {int(elapsed.total_seconds()/60)} min")
+    # final flush
+    if buffer_rows:
+        pd.DataFrame(buffer_rows).to_csv(feature_file, mode="a", header=not written_header, index=False)
+        print(f"saved features to {feature_file}")
 
-# final flush
-if buffer_rows:
-    pd.DataFrame(buffer_rows).to_csv(feature_file, mode="a", header=not written_header, index=False)
-    print(f"saved features to {feature_file}")
+if __name__ == "__main__":
+    args = parser.parse_args()
+
+    main(cp           = pd.read_csv(os.path.join(DATA_DIR, args.c)), 
+         feature_file = os.path.join(FEATURE_OUTPUT_DIR, args.o), 
+         cp_poly      = gpd.read_file(os.path.join(DATA_DIR, args.p)),
+         flush_fires  = args.flush_n_fires,
+         max_workers  = args.num_workers,
+         DEBUG_MODE   = args.debug)

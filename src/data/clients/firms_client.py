@@ -59,7 +59,7 @@ class FirmsClient:
         end: Union[str, date, pd.Timestamp],
         variables: List[str],
         *,
-        sources: Sequence[FirmsSources] = ["VIIRS_SNPP_NRT"], # ["VIIRS_NOAA21_SP"],
+        source: Sequence[FirmsSources] = "VIIRS_SNPP_NRT", # ["VIIRS_NOAA21_SP"],
         crs: str = "EPSG:4326",
         return_by_source: bool = False,
     ) -> Union[xr.Dataset, Dict[str, xr.Dataset]]:
@@ -82,40 +82,32 @@ class FirmsClient:
         session = self._session()
 
         out: Dict[str, xr.Dataset] = {}
-        for src in sources:
-            frames = []
-            for w_start, w_end in windows:
-                day_range = int((w_end - w_start).days) + 1
-                df = self._area_csv_df(
-                    session=session,
-                    source=src,
-                    bbox_wsen=(west, south, east, north),
-                    day_range=day_range,
-                    date=w_start.strftime("%Y-%m-%d"),
-                )
-                frames.append(df)
-
-            df_src = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
-            if df_src.empty:
-                out[src] = self._empty_dataset()
-                continue
-
-            df_src = self._dedupe_df(df_src)
-
-            # Clip precisely to polygon (still in lon/lat)
-            df_src = self._clip_df_to_polygon(df_src, polygon)
-
-            # Build time coordinate if possible
+        frames = []
+        for w_start, w_end in windows:
+            day_range = int((w_end - w_start).days) + 1
+            df = self._area_csv_df(
+                session=session,
+                source=source,
+                bbox_wsen=(west, south, east, north),
+                day_range=day_range,
+                date=w_start.strftime("%Y-%m-%d"),
+            )
+            frames.append(df)
+        df_src = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+        if df_src.empty:
             df_src = self._add_time_column_if_possible(df_src)
-            
-            out[src] = df_src.set_index(['time','latitude','longitude']).to_xarray()[variables]
-            
-        if return_by_source:
-            return out
+            return df_src
 
-        # Merge sources into one obs dataset
-        ds_all = xr.concat([out[s] for s in out.keys()], dim="obs") if out else self._empty_dataset()
-        return ds_all
+        df_src = self._dedupe_df(df_src)
+
+        # Clip precisely to polygon (still in lon/lat)
+        df_src = self._clip_df_to_polygon(df_src, polygon)
+
+        # Build time coordinate if possible
+        df_src = self._add_time_column_if_possible(df_src)
+        
+        out = df_src.set_index(['time','latitude','longitude']).to_xarray()[variables]
+        return out
 
     # -------------------------
     # HTTP session w/ retry
@@ -217,6 +209,7 @@ class FirmsClient:
         We'll construct a datetime64[ns] column named 'time' if present.
         """
         if df.empty:
+            df['time'] = []
             return df
 
         if "acq_date" in df.columns and "acq_time" in df.columns:

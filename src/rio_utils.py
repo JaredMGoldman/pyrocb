@@ -13,18 +13,20 @@ def _validate_tif_readable(path: Path) -> None:
     with rasterio.open(path) as src:
         w = rasterio.windows.Window(0, 0, min(64, src.width), min(64, src.height))
         _ = src.read(1, window=w)
+    return path
 
 def validate_tif_download(
     url: str,
-    out_path: Path,
+    path: Path,
     session: requests.Session,
     ):
-    download_file_safe(url, out_path, session)
+    
+    path = download_file_safe(url, path, session)
     try:
-        _validate_tif_readable(path)
+        path = _validate_tif_readable(path)
     except Exception:
         path.unlink(missing_ok=True)
-        path = download_file_safe(url, out_path, session, tries=3)
+        path = download_file_safe(url, path, session, tries=3)
         _validate_tif_readable(path)
     return path
 
@@ -96,9 +98,11 @@ def open_netcdf_safe_cached(
         return ds
     except Exception:
         # If it can't open, assume corruption/truncation and retry once by deleting
-        path.unlink(missing_ok=True)
-        path = download_file_safe(url, out_path, session, tries=3)
-        ds = xr.open_dataset(path, engine=engine, **open_kwargs)
+        if type(out_path) is str:
+            out_path = Path(out_path)
+        out_path.unlink(missing_ok=True)
+        out_path = download_file_safe(url, out_path, session, tries=3)
+        ds = xr.open_dataset(out_path, engine=engine, **open_kwargs)
         if load:
             ds = ds.load()
         return ds

@@ -3,7 +3,6 @@ import pandas as pd
 import geopandas as gpd
 from shapely import box, contains
 import numpy as np
-from ipdb import set_trace
 from datetime import datetime
 
 def is_conus(perim):

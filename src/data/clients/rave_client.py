@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple, Union
+from typing import Dict, List, Optional, Sequence, Tuple, Union, Iterable
 import re
 
 import numpy as np
@@ -35,6 +35,7 @@ class RAVEClient:
     base_url: str = "https://www.ospo.noaa.gov/pub/Blended/RAVE/RAVE-HrlyEmiss-3km"
     cache_files: bool = False
     cache_dir: Union[str, Path] = os.path.join(CACHE_DIR, "rave_cache")
+    cached_files = []
     timeout_s: int = 120
 
     # common coordinate name fallbacks
@@ -54,13 +55,36 @@ class RAVEClient:
     # ----------------------------
     # Public API
     # ----------------------------
-    def query(
+    def query(self,
+        polygon: Geom,
+        start: Union[str, pd.Timestamp],
+        end: Union[str, pd.Timestamp],
+        variables: Optional[Sequence[str]] = None,
+        drop_outside: bool = True,
+        bbox_first: bool = True,
+        prefer_latest_vr: bool = True,
+        keep_attrs: bool = True,
+        ) -> xr.Dataset:
+        try:
+            return self._query(
+                polygon,
+                start,
+                end,
+                variables,
+                drop_outside,
+                bbox_first,
+                prefer_latest_vr,
+                keep_attrs,)
+        except Exception as e:
+            self._remove_cached_files()
+            raise RuntimeError(f"[ERROR] RAVE failed: {e}")
+        
+    def _query(
         self,
         polygon: Geom,
         start: Union[str, pd.Timestamp],
         end: Union[str, pd.Timestamp],
         variables: Optional[Sequence[str]] = None,
-        *,
         drop_outside: bool = True,
         bbox_first: bool = True,
         prefer_latest_vr: bool = True,
@@ -97,17 +121,16 @@ class RAVEClient:
         if not files:
             raise FileNotFoundError("No RAVE files found overlapping the requested time window.")
 
-
         dsets: List[xr.Dataset] = []
-        local_fnames: List[str] = []
+        ds = None
         for meta in files:
             if is_cached:
                 local = meta["path"]
+                ds = open_netcdf_safe_cached(self.base_url, local, self._session)
             else:
                 local = self._download(url = meta['url'], year=meta["year"], month=meta["month"])
-            
-            local_fnames.append(local)
-            ds = open_netcdf_safe_cached(meta['url'], local, self._session)
+                ds = open_netcdf_safe_cached(meta['url'], local, self._session)
+                self.cached_files.append(local)
 
             # variable subset
             if variables is not None:
@@ -128,11 +151,9 @@ class RAVEClient:
             dsets.append(ds)
         if not dsets:
             raise RuntimeError("No datasets remained after subsetting.")
-
-        out = xr.concat(dsets, dim="time", combine_attrs="override" if keep_attrs else "drop")
-        if not (is_cached or self.cache_files):
-            print("removing cached RAVE files...")
-            [os.remove(fname) for fname in local_fnames]
+        
+        out = xr.merge(dsets)
+        self._remove_cached_files()
         return out
 
     # ----------------------------
@@ -141,7 +162,7 @@ class RAVEClient:
     def _month_dir_url(self, year: int, month: int) -> str:
         return f"{self.base_url.rstrip('/')}/{year:04d}/{month:02d}/"
 
-    def _list_month_filenames(self, year: int, month: int, day: int) -> List[str]:
+    def _list_month_filenames(self, year: int, month: int, hrs: pd.DatetimeIndex) -> List[str]:
         """
         OSPO pub directories are simple HTML indexes; grab hrefs ending in .nc
         """
@@ -149,12 +170,15 @@ class RAVEClient:
         r = self._session.get(url, timeout=self.timeout_s)
         names = re.findall(r'href="([^"]+\.nc)"', r.text, flags=re.IGNORECASE)
         r.raise_for_status() 
-        
-        filtered_names = [{ 'url' : self._month_dir_url(year, month) + fname, 
-                            'year': year,
-                            'month' : month,
-                            'day' : day} \
-                                  for fname in names if f"s{year:04d}{month:02d}{day:02d}" in fname]
+        filtered_names = []
+        for hr in hrs:
+            if hr.year != year or hr.month != month:
+                continue
+            filtered_names.extend([{ 'url' : self._month_dir_url(year, month) + fname, 
+                                'year': year,
+                                'month' : month,
+                                'day' : hr.day} \
+                                    for fname in names if f"s{year:04d}{month:02d}{hr.day:02d}{hr.hour:02d}" in fname])
         return filtered_names
     
     def _get_cached_fnames(self, start_ts: pd.Timestamp, end_ts: pd.Timestamp) -> List[Dict]:
@@ -165,7 +189,7 @@ class RAVEClient:
         fnames = []
         for m in months:
             year, month, day = int(m.year), int(m.month), int(m.day)
-            this_dir = os.path.join(cached_file_base, str(year), str(month))
+            this_dir = os.path.join(cached_file_base, str(year))
             [name] = [fname for fname in os.listdir(this_dir) if f"s{year:04d}{month:02d}{day:02d}" in fname]
 
             fnames.append({ 'path' : os.path.join(this_dir, name), 
@@ -176,18 +200,18 @@ class RAVEClient:
 
     def _collect_files_for_range(self, start_ts: pd.Timestamp, end_ts: pd.Timestamp) -> List[Dict]:
         # consider months overlapping the window
-        start_month = pd.Timestamp(start_ts.year, start_ts.month, 1)
-        end_month = pd.Timestamp(end_ts.year, end_ts.month, 1)
-        months = pd.date_range(start_month, end_month, freq="MS")
-
-        for m in months:
-            year, month, day = int(m.year), int(m.month), int(m.day)
-            try:
-                fnames = self._list_month_filenames(year, month, day)
-            except requests.HTTPError:
-                # month directory may not exist (e.g., outside archive range)
-                continue
-
+        hrs = pd.date_range(start_ts, end_ts, freq="h")
+        months = np.unique([hr.month for hr in hrs])
+        years = np.unique([hr.year for hr in hrs])
+        fnames = []
+        for year in years:
+            for month in months:
+                try:
+                    fnames.extend(self._list_month_filenames(year, month, hrs))
+                except requests.HTTPError:
+                    # month directory may not exist (e.g., outside archive range)
+                    continue
+                
         return fnames
 
     # ----------------------------
@@ -202,6 +226,11 @@ class RAVEClient:
             return out
 
         return download_file_safe(url, out, self._session)
+
+    def _remove_cached_files(self):
+        if not self.cache_files:
+            print('cleaning up RAVE cache')
+            [os.remove(fname) for fname in self.cached_files if os.path.exists(fname)]
 
     # ----------------------------
     # Dataset helpers
@@ -334,7 +363,7 @@ class RAVEClient:
 if __name__ == "__main__":
     from shapely.geometry import box
 
-    poly = box(-122.0, 36.0, -118.0, 39.0)  # CA-ish box
+    poly = box(-120.0, 36.0, -119.75, 36.25)  # CA-ish box
 
     client = RAVEClient()
 
@@ -342,7 +371,7 @@ if __name__ == "__main__":
         polygon=poly,
         start="2024-10-01 00:00",
         end="2024-10-01 12:00",
-        variables=None,  # replace with actual names in your files
+        variables= ["FRP_MEAN", "FRP_SD", "FRE", "PM25"],
     )
 
     print(ds)

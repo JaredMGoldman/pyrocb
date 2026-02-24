@@ -14,7 +14,7 @@ import xarray as xr
 import geopandas as gpd
 from shapely.geometry import Polygon, MultiPolygon
 from shapely.prepared import prep
-from rio_utils import validate_tif_download, open_geotiff_safe
+from rio_utils import validate_tif_download, download_file_safe, open_geotiff_safe, open_netcdf_safe, open_netcdf_safe_cached
 
 # Optional but recommended for HDF-EOS -> xarray
 import rioxarray  # noqa: F401  (pip install rioxarray rasterio; conda-forge often easiest)
@@ -38,8 +38,9 @@ class MODISClient:
     product: str = "MYD14A1"
     collection: str = "61"
     cache_files: bool = False
-    key_file: Union[str, Path] = os.path.join(CLIENTS_DIR, "modis.key")
+    cached_files = []
     cache_dir: Union[str, Path] = os.path.join(CACHE_DIR, "laads_cache")
+    key_file: Union[str, Path] = os.path.join(CLIENTS_DIR, "modis.key")
     timeout_s: int = 120
 
     base_url: str = "https://ladsweb.modaps.eosdis.nasa.gov/archive/allData"
@@ -57,12 +58,28 @@ class MODISClient:
     # -------------------------
     # Public API
     # -------------------------
-    def query(
+    def query(self,
+        polygon: Geom,
+        start: Union[str, date, pd.Timestamp],
+        end: Union[str, date, pd.Timestamp],
+        variables: Sequence[str] = None,
+        prefer_subdatasets_regex: bool = True,
+        drop_outside: bool = True,
+        ) -> xr.Dataset:
+        try:
+            return self._query(
+                polygon, start, end, variables,
+                prefer_subdatasets_regex = prefer_subdatasets_regex, 
+                drop_outside = drop_outside)
+        except Exception as e:
+            self._remove_cached_files()
+            raise RuntimeError(f"[ERROR] MODIS failed: {e}")
+        
+    def _query(
         self,
         polygon: Geom,
         start: Union[str, date, pd.Timestamp],
         end: Union[str, date, pd.Timestamp],
-        *,
         variables: Optional[Sequence[str]] = None,
         prefer_subdatasets_regex: bool = True,
         drop_outside: bool = True,
@@ -106,6 +123,7 @@ class MODISClient:
             position = (doy - 1) % 8 + 1
             if not bucket in doy_buckets.keys():
                 fname = self._download_day_tiles(year, bucket, tiles)
+                self.cached_files.extend(fname)
                 local_files.extend(fname)
                 doy_buckets[bucket] = [position]
             else:
@@ -137,10 +155,7 @@ class MODISClient:
         
         ds_all = add_lonlat_coords(ds_all)
 
-        if not self.cache_files:
-            print('cleaning up MODIS cache')
-            [os.remove(fname) for fname in local_files]
-
+        self._remove_cached_files()
         return ds_all
 
     # -------------------------
@@ -255,7 +270,12 @@ class MODISClient:
 
     def _download_file(self, year: int, doy: int, filename: str, out_path: Path) -> None:
         url = self._dir_url(year, doy) + filename
-        validate_tif_download(url, out_path, self._session)
+        download_file_safe(url, out_path, self._session)
+
+    def _remove_cached_files(self):
+        if not self.cache_files:
+            print('cleaning up MODIS cache')
+            [os.remove(fname) for fname in self.cached_files if os.path.exists(fname)]
 
     @staticmethod
     def _read_token(key_file: Union[str, Path]) -> str:

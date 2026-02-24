@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
-from typing import Iterable, Sequence, Union
+from typing import Iterable, Sequence, Union, List
 
 import numpy as np
 import os
@@ -38,6 +38,7 @@ class ESIClient:
     remote_data_dir: str = "data/esi/4WK"
     cache_files = False
     cache_dir: Union[str, Path] = os.path.join(CACHE_DIR, "esi_cache")
+    cached_files = []
     timeout_s: int = 120
 
     def __post_init__(self):
@@ -48,7 +49,23 @@ class ESIClient:
     # ----------------------------
     # Public API
     # ----------------------------
-    def query(
+    def query(self,
+        polygon: Geom,
+        start: Union[str, date, pd.Timestamp],
+        end: Union[str, date, pd.Timestamp],
+        variables: Sequence[str] = ("DFPPM",),
+        clip: bool = True,
+        drop: bool = True,
+        ) -> xr.Dataset:
+        try:
+            return self._query(
+                polygon, start, end, variables,
+                clip = clip, drop = drop)
+        except Exception as e:
+            self._remove_cached_files()
+            raise RuntimeError(f"[ERROR] ESI failed: {e}")
+
+    def _query(
         self,
         polygon: Geom,
         start: Union[str, date, pd.Timestamp],
@@ -82,12 +99,11 @@ class ESIClient:
         snapped_dates = self._snapped_dates(start_ts, end_ts)
 
         per_time_dsets = []
-        tifs = []
         for d in snapped_dates:
             per_var = []
             for var in variables:
                 tif = self._download_tif(d)
-                tifs.append(tif)
+                self.cached_files.append(tif)
                 da = self._open_tif_as_dataarray(tif, var_name=var)
 
                 if clip:
@@ -105,11 +121,13 @@ class ESIClient:
             raise FileNotFoundError("No datasets were loaded for the requested time range.")
 
         ds = xr.concat(per_time_dsets, dim="time")
+        self._remove_cached_files()
+        return ds
+
+    def _remove_cached_files(self):
         if not self.cache_files:
             print('cleaning up ESI cache')
-            tifs = list(set(tifs))
-            [os.remove(tif) for tif in tifs]
-        return ds
+            [os.remove(fname) for fname in self.cached_files if os.path.exists(fname)]
 
     # ----------------------------
     # Internals
