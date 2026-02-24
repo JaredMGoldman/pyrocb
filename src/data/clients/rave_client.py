@@ -15,6 +15,7 @@ from shapely.geometry import Polygon, MultiPolygon
 from shapely.prepared import prep
 
 from utils import CACHE_DIR
+from rio_utils import download_file_safe, open_netcdf_safe_cached
 
 Geom = Union[Polygon, MultiPolygon]
 
@@ -32,6 +33,7 @@ class RAVEClient:
       - returns xr.Dataset concatenated over time
     """
     base_url: str = "https://www.ospo.noaa.gov/pub/Blended/RAVE/RAVE-HrlyEmiss-3km"
+    cache_files: bool = False
     cache_dir: Union[str, Path] = os.path.join(CACHE_DIR, "rave_cache")
     timeout_s: int = 120
 
@@ -97,13 +99,15 @@ class RAVEClient:
 
 
         dsets: List[xr.Dataset] = []
+        local_fnames: List[str] = []
         for meta in files:
             if is_cached:
                 local = meta["path"]
             else:
                 local = self._download(url = meta['url'], year=meta["year"], month=meta["month"])
-
-            ds = xr.open_dataset(local)
+            
+            local_fnames.append(local)
+            ds = open_netcdf_safe_cached(meta['url'], local, self._session)
 
             # variable subset
             if variables is not None:
@@ -126,6 +130,9 @@ class RAVEClient:
             raise RuntimeError("No datasets remained after subsetting.")
 
         out = xr.concat(dsets, dim="time", combine_attrs="override" if keep_attrs else "drop")
+        if not (is_cached or self.cache_files):
+            print("removing cached RAVE files...")
+            [os.remove(fname) for fname in local_fnames]
         return out
 
     # ----------------------------
@@ -194,13 +201,14 @@ class RAVEClient:
         if out.exists() and out.stat().st_size > 0:
             return out
 
-        with self._session.get(url, stream=True, timeout=self.timeout_s) as r:
-            r.raise_for_status()
-            with open(out, "wb") as f:
-                for chunk in r.iter_content(chunk_size=chunk_size):
-                    if chunk:
-                        f.write(chunk)
-        return out
+        return download_file_safe(url, out, self._session)
+        # with self._session.get(url, stream=True, timeout=self.timeout_s) as r:
+        #     r.raise_for_status()
+        #     with open(out, "wb") as f:
+        #         for chunk in r.iter_content(chunk_size=chunk_size):
+        #             if chunk:
+        #                 f.write(chunk)
+        # return out
 
     # ----------------------------
     # Dataset helpers
@@ -294,7 +302,7 @@ class RAVEClient:
 
             if not drop_outside:
                 return ds
-
+            
             mask = self._polygon_mask(lat.values, lon.values, polygon)
             mask_da = xr.DataArray(mask, dims=lat.dims)
             return ds.where(mask_da, drop=True)

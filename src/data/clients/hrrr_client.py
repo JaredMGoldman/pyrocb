@@ -35,13 +35,15 @@ Freq = Literal["1H", "1h", "60min"]
 
 RegionMode = Literal["auto", "force_hrrr", "force_ifs"]
 
+drop_coords = ["heightAboveGround", "depthBelowLand", "valid_time"]
+
 @dataclass
 class HRRRClient:
     product: str = "sfc"
     fxx: int = 0
     model: str = "hrrr"
-    freq: Freq = "1h"
-    remove_grib: bool = False
+    freq: Freq = "6h"
+    remove_grib: bool = True
     n_jobs: int = 4
 
     # NEW: IFS fallback config
@@ -121,38 +123,40 @@ class HRRRClient:
             raise ValueError("Empty time range after applying model-specific frequency.")
 
         search = self._build_search_string(variables)
-
-        FH = FastHerbie(
-            times,
-            model=model,
-            product=product,
-            fxx=[self.fxx] * len(times),
-        )
-
-        dses = FH.xarray(search, remove_grib=self.remove_grib)
-        return self._stack_dses(dses, time_dim)
-
-    @staticmethod
-    def _stack_dses(dses, time_dim):
-        def _find_lat_lon_var(ds):
-            lat_var = ""
-            lon_var = ""
-            if "latitude" in ds.dims:
-                lat_var = "latitude"
-            elif "y" in ds.dims:
-                lat_var = "y"
-            if "longitude" in ds.dims:
-                lon_var = "longitude"
-            elif "x" in ds.dims:
-                lon_var = "x"
-            return lat_var, lon_var
+        dses = []
+        for time in times:
+            FH = Herbie(
+                time,
+                model=model,
+                product=product,
+                fxx=self.fxx,
+            )
+            dses.append(self.combine_dses(FH.xarray(search, remove_grib=self.remove_grib), time_dim))
+        
+        return xr.merge(dses, join = 'outer')
+    
+    def _find_lat_lon_var(self, ds):
+        lat_var = ""
+        lon_var = ""
+        if "latitude" in ds.dims:
+            lat_var = "latitude"
+        elif "y" in ds.dims:
+            lat_var = "y"
+        if "longitude" in ds.dims:
+            lon_var = "longitude"
+        elif "x" in ds.dims:
+            lon_var = "x"
+        return lat_var, lon_var
+    
+    def combine_dses(self, all_dses, time_dim):
+        dses = []
+        for ds in all_dses:
+            ds = ds.expand_dims(time=[ds[time_dim].values]).drop_attrs()
+            coords_to_rm = [coord for coord in drop_coords if coord in ds._coord_names]
+            new_ds = ds.drop_vars(coords_to_rm)
+            dses.append(new_ds)
             
-        if type(dses) is xr.Dataset:
-            lat_var, lon_var = _find_lat_lon_var(dses)
-            return dses.stack(tcell=(time_dim, lat_var, lon_var))
-        else:
-            dses_stacked = [ds.stack(tcell=(time_dim, _find_lat_lon_var(ds)[0], _find_lat_lon_var(ds)[1])) for ds in dses]
-            return xr.concat(dses_stacked, dim='tcell') 
+        return xr.merge(dses, join = 'outer', compat = 'override')
 
     @staticmethod
     def _build_search_string(variables: Sequence[str]) -> str:

@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import date
 from io import StringIO
 from typing import Dict, Iterable, List, Literal, Optional, Sequence, Tuple, Union
-from utils import FIRMS_KEY_FNAME, CLIENTS_PATH, get_repo_root, set_env_var
+from utils import FIRMS_KEY_FNAME, CLIENTS_DIR, set_env_var
 
 import os
 import numpy as np
@@ -30,18 +30,20 @@ FirmsSources = Literal[
 
 Geom = Union[Polygon, MultiPolygon]
 
-
-@dataclass(frozen=True)
 class FirmsClient:
-    map_key: str
+    map_key_path: str  = os.path.join(CLIENTS_DIR,
+                                  FIRMS_KEY_FNAME)
+    
     base_url: str = "https://firms.modaps.eosdis.nasa.gov"
     timeout: int = 60
     max_retries: int = 5
     backoff_factor: float = 0.8
-
-    def __post_init__(self):
-        if not self.map_key:
-            raise ValueError("FIRMS MAP_KEY is required.")
+    map_key: str = ""
+    if os.path.exists(map_key_path):
+            with open(map_key_path, 'r') as f:
+                map_key = f.read()
+    else:
+        raise ValueError(f"Save your FIRMS key to {map_key_path}")
 
     @classmethod
     def from_env(cls, env_var: str = "FIRMS_MAP_KEY") -> "FirmsClient":
@@ -56,8 +58,8 @@ class FirmsClient:
         start: Union[str, date, pd.Timestamp],
         end: Union[str, date, pd.Timestamp],
         variables: List[str],
-        sources: Sequence[FirmsSources],
         *,
+        sources: Sequence[FirmsSources] = ["VIIRS_SNPP_NRT"], # ["VIIRS_NOAA21_SP"],
         crs: str = "EPSG:4326",
         return_by_source: bool = False,
     ) -> Union[xr.Dataset, Dict[str, xr.Dataset]]:
@@ -105,7 +107,7 @@ class FirmsClient:
 
             # Build time coordinate if possible
             df_src = self._add_time_column_if_possible(df_src)
-
+            
             out[src] = df_src.set_index(['time','latitude','longitude']).to_xarray()[variables]
             
         if return_by_source:
@@ -231,7 +233,8 @@ class FirmsClient:
             # fallback if date is YYYYMMDD
             if df["time"].isna().all():
                 df["time"] = pd.to_datetime(d + t, format="%Y%m%d%H%M", errors="coerce")
-
+        else:
+            df["time"] = pd.Timestamp("1999-01-01")
         return df
 
     @staticmethod
@@ -239,7 +242,6 @@ class FirmsClient:
         """
         Convert FIRMS detections DataFrame to xr.Dataset with dim 'obs'.
         """
-        import ipdb; ipdb.set_trace()
         if df.empty:
             return FirmsClient._empty_dataset()
 
@@ -281,8 +283,7 @@ class FirmsClient:
     
 if __name__ == "__main__":
     from shapely.geometry import box
-    firms_key_path = os.path.join(get_repo_root(),
-                                  CLIENTS_PATH,
+    firms_key_path = os.path.join(CLIENTS_DIR,
                                   FIRMS_KEY_FNAME)
 
     set_env_var("FIRMS_MAP_KEY", firms_key_path)

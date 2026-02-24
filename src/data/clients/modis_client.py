@@ -8,11 +8,13 @@ from typing import Iterable, Optional, Sequence, Tuple, Union, List
 
 import numpy as np
 import pandas as pd
+from rasterio.features import geometry_mask
 import requests
 import xarray as xr
 import geopandas as gpd
 from shapely.geometry import Polygon, MultiPolygon
 from shapely.prepared import prep
+from rio_utils import validate_tif_download, open_geotiff_safe
 
 # Optional but recommended for HDF-EOS -> xarray
 import rioxarray  # noqa: F401  (pip install rioxarray rasterio; conda-forge often easiest)
@@ -35,6 +37,7 @@ class MODISClient:
     """
     product: str = "MYD14A1"
     collection: str = "61"
+    cache_files: bool = False
     key_file: Union[str, Path] = os.path.join(CLIENTS_DIR, "modis.key")
     cache_dir: Union[str, Path] = os.path.join(CACHE_DIR, "laads_cache")
     timeout_s: int = 120
@@ -115,7 +118,10 @@ class MODISClient:
         dsets = []
         for fp in local_files:
             bucket = int(fp.split(os.sep)[-2])
-            ds = self._open_hdf_as_dataset(fp, variables=variables, regex=prefer_subdatasets_regex, days = doy_buckets[bucket])
+            try:
+                ds = self._open_hdf_as_dataset(fp, variables=variables, regex=prefer_subdatasets_regex, days = doy_buckets[bucket])
+            except:
+                raise RuntimeError("unable to open MODIS data...")
             # attach time from filename AYYYYDDD
             year = int(fp.split(os.sep)[-3])
             ts = self._times_from_buckets(year, bucket, doy_buckets[bucket])
@@ -130,6 +136,10 @@ class MODISClient:
             ds_all = self._mask_to_polygon(ds_all, poly)
         
         ds_all = add_lonlat_coords(ds_all)
+
+        if not self.cache_files:
+            print('cleaning up MODIS cache')
+            [os.remove(fname) for fname in local_files]
 
         return ds_all
 
@@ -245,12 +255,14 @@ class MODISClient:
 
     def _download_file(self, year: int, doy: int, filename: str, out_path: Path) -> None:
         url = self._dir_url(year, doy) + filename
-        with self._session.get(url, stream=True, timeout=self.timeout_s) as r:
-            r.raise_for_status()
-            with open(out_path, "wb") as f:
-                for chunk in r.iter_content(chunk_size=1 << 20):
-                    if chunk:
-                        f.write(chunk)
+        validate_tif_download(url, out_path, self._session)
+        # with self._session.get(url, stream=True, timeout=self.timeout_s) as r:
+        #     r.raise_for_status()
+            
+        #     with open(out_path, "wb") as f:
+        #         for chunk in r.iter_content(chunk_size=1 << 20):
+        #             if chunk:
+        #                 f.write(chunk)
 
     @staticmethod
     def _read_token(key_file: Union[str, Path]) -> str:
@@ -309,7 +321,7 @@ class MODISClient:
         names = []
         
         for s in chosen:
-            da = rioxarray.open_rasterio(s, masked=True).sel(band=days)
+            da =  open_geotiff_safe(s).sel(band=days) # rioxarray.open_rasterio(s, masked=True).sel(band=days)
             # name from last colon token
             nm = s.split(":")[-1]
             dataarrays.append(da)
@@ -324,14 +336,19 @@ class MODISClient:
     def _mask_to_polygon(self, ds: xr.Dataset, polygon: Geom) -> xr.Dataset:
         # Many MODIS land HDF subdatasets will carry an implicit sinusoidal CRS in rio attrs.
         # If ds has 2D lon/lat already, use them. Otherwise, rely on rioxarray clip if possible.
-        try:
-            # rioxarray clip is most robust when CRS is known
-            gdf = gpd.GeoDataFrame(geometry=[polygon], crs="EPSG:4326")
-            
-            # reproject polygon into dataset CRS if needed
-            if ds.rio.crs is not None:
+        try:            # Reproject polygon into raster CRS if needed
+            if ds.rio.crs is not None and str(ds.rio.crs).upper() != "EPSG:4326":
                 gdf = gdf.to_crs(ds.rio.crs)
-            return ds.rio.clip(gdf.geometry, gdf.crs, drop=True)
+
+            mask = geometry_mask(
+                geometries=[geom.__geo_interface__ for geom in gdf.geometry],
+                out_shape=(ds.sizes["y"], ds.sizes["x"]),
+                transform=ds.rio.transform(),
+                invert=True,         
+                all_touched=True,
+            )
+            return ds.where(mask)
+            # return ds.rio.clip(gdf.geometry, gdf.crs, drop=True)
         except Exception:
             # fallback: do nothing (or you can implement a manual mask if you add lon/lat coords)
             return ds

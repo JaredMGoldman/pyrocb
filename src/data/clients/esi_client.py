@@ -8,6 +8,8 @@ from typing import Iterable, Sequence, Union
 import numpy as np
 import os
 import pandas as pd
+from rasterio.features import geometry_mask
+import re
 import requests
 import xarray as xr
 import rioxarray  # requires rasterio + GDAL
@@ -15,6 +17,7 @@ import geopandas as gpd
 from shapely.geometry import Polygon, MultiPolygon
 
 from utils import CACHE_DIR
+from rio_utils import validate_tif_download
 
 Geom = Union[Polygon, MultiPolygon]
 
@@ -31,7 +34,9 @@ class ESIClient:
       {VAR}_4WK_YYYYDDD.tif
       Example: DFPPM_4WK_2017008.tif
     """
-    base_url: str = "https://gis1.servirglobal.net/data/esi/4WK"
+    base_url: str = "https://gis1.servirglobal.net"
+    remote_data_dir: str = "data/esi/4WK"
+    cache_files = False
     cache_dir: Union[str, Path] = os.path.join(CACHE_DIR, "esi_cache")
     timeout_s: int = 120
 
@@ -77,10 +82,12 @@ class ESIClient:
         snapped_dates = self._snapped_dates(start_ts, end_ts)
 
         per_time_dsets = []
+        tifs = []
         for d in snapped_dates:
             per_var = []
             for var in variables:
-                tif = self._download_tif(var, d)
+                tif = self._download_tif(d)
+                tifs.append(tif)
                 da = self._open_tif_as_dataarray(tif, var_name=var)
 
                 if clip:
@@ -98,6 +105,10 @@ class ESIClient:
             raise FileNotFoundError("No datasets were loaded for the requested time range.")
 
         ds = xr.concat(per_time_dsets, dim="time")
+        if not self.cache_files:
+            print('cleaning up ESI cache')
+            tifs = list(set(tifs))
+            [os.remove(tif) for tif in tifs]
         return ds
 
     # ----------------------------
@@ -118,34 +129,40 @@ class ESIClient:
     def _doy_str(d: pd.Timestamp) -> str:
         return f"{d.timetuple().tm_yday:03d}"
 
-    def _remote_url(self, var: str, d: pd.Timestamp) -> str:
+    def _remote_url(self, d: pd.Timestamp) -> str:
         year = d.year
         doy = self._doy_str(d)
-        fname = f"{var}_4WK_{year}{doy}.tif"
-        return f"{self.base_url}/{year}/{fname}"
+        fnames = self._list_dir(year)
+        return [f"{self.base_url}{fname}" for fname in fnames if f"_{year}{doy}.tif" in fname][0]
+    
+    def _list_dir(self, year: int) -> list[str]:
+        url = f"{self.base_url}/{self.remote_data_dir}/{year}"
+        r = self._session.get(url, timeout=self.timeout_s)
+        r.raise_for_status()
+        return sorted(set(re.findall(r'"([^"]+\.tif)"', r.text)))
 
-    def _local_path(self, var: str, d: pd.Timestamp) -> Path:
+    def _local_path(self, d: pd.Timestamp) -> Path:
         year = d.year
         doy = self._doy_str(d)
-        fname = f"{var}_4WK_{year}{doy}.tif"
+        fname = f"ESI_4WK_{year}{doy}.tif"
         p = self.cache_dir / str(year) / fname
         p.parent.mkdir(parents=True, exist_ok=True)
         return p
 
-    def _download_tif(self, var: str, d: pd.Timestamp) -> Path:
-        url = self._remote_url(var, d)
-        out_path = self._local_path(var, d)
+    def _download_tif(self, d: pd.Timestamp) -> Path:
+        url = self._remote_url(d)
+        out_path = self._local_path(d)
 
         if out_path.exists() and out_path.stat().st_size > 0:
             return out_path
-
-        with self._session.get(url, stream=True, timeout=self.timeout_s) as r:
-            r.raise_for_status()
-            with open(out_path, "wb") as f:
-                for chunk in r.iter_content(chunk_size=1 << 20):
-                    if chunk:
-                        f.write(chunk)
-        return out_path
+        return validate_tif_download(url, out_path, self._session)
+        # with self._session.get(url, stream=True, timeout=self.timeout_s) as r:
+        #     r.raise_for_status()
+        #     with open(out_path, "wb") as f:
+        #         for chunk in r.iter_content(chunk_size=1 << 20):
+        #             if chunk:
+        #                 f.write(chunk)
+        # return out_path
 
     @staticmethod
     def _open_tif_as_dataarray(tif_path: Path, var_name: str) -> xr.DataArray:
@@ -163,7 +180,15 @@ class ESIClient:
         if da.rio.crs is not None and str(da.rio.crs).upper() != "EPSG:4326":
             gdf = gdf.to_crs(da.rio.crs)
 
-        return da.rio.clip(gdf.geometry, gdf.crs, drop=drop)
+        mask = geometry_mask(
+            geometries=[geom.__geo_interface__ for geom in gdf.geometry],
+            out_shape=(da.sizes["y"], da.sizes["x"]),
+            transform=da.rio.transform(),
+            invert=True,         
+            all_touched=True,
+        )
+        return da.where(mask)
+        # return da.rio.clip(gdf.geometry, gdf.crs, drop=drop)
     
 if __name__ == "__main__":
     from shapely.geometry import box
