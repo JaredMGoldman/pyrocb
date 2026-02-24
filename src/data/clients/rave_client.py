@@ -202,13 +202,6 @@ class RAVEClient:
             return out
 
         return download_file_safe(url, out, self._session)
-        # with self._session.get(url, stream=True, timeout=self.timeout_s) as r:
-        #     r.raise_for_status()
-        #     with open(out, "wb") as f:
-        #         for chunk in r.iter_content(chunk_size=chunk_size):
-        #             if chunk:
-        #                 f.write(chunk)
-        # return out
 
     # ----------------------------
     # Dataset helpers

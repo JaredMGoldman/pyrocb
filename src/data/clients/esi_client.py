@@ -156,13 +156,6 @@ class ESIClient:
         if out_path.exists() and out_path.stat().st_size > 0:
             return out_path
         return validate_tif_download(url, out_path, self._session)
-        # with self._session.get(url, stream=True, timeout=self.timeout_s) as r:
-        #     r.raise_for_status()
-        #     with open(out_path, "wb") as f:
-        #         for chunk in r.iter_content(chunk_size=1 << 20):
-        #             if chunk:
-        #                 f.write(chunk)
-        # return out_path
 
     @staticmethod
     def _open_tif_as_dataarray(tif_path: Path, var_name: str) -> xr.DataArray:
@@ -188,7 +181,6 @@ class ESIClient:
             all_touched=True,
         )
         return da.where(mask)
-        # return da.rio.clip(gdf.geometry, gdf.crs, drop=drop)
     
 if __name__ == "__main__":
     from shapely.geometry import box

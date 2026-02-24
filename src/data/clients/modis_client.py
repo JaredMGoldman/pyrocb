@@ -256,13 +256,6 @@ class MODISClient:
     def _download_file(self, year: int, doy: int, filename: str, out_path: Path) -> None:
         url = self._dir_url(year, doy) + filename
         validate_tif_download(url, out_path, self._session)
-        # with self._session.get(url, stream=True, timeout=self.timeout_s) as r:
-        #     r.raise_for_status()
-            
-        #     with open(out_path, "wb") as f:
-        #         for chunk in r.iter_content(chunk_size=1 << 20):
-        #             if chunk:
-        #                 f.write(chunk)
 
     @staticmethod
     def _read_token(key_file: Union[str, Path]) -> str:

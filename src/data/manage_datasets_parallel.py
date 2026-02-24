@@ -33,6 +33,8 @@ def skip_fire(start, end, perim):
     if start >= skip_lb and start < skip_ub \
         or end > skip_lb and end <= skip_lb:
         return True
+    if (start - pd.Timedelta(1, 'D')).year < (end + pd.Timedelta(1, 'D')).year:
+        return True
     if not is_conus(perim) and end < skip_lb:
         return True
     return False
@@ -103,9 +105,6 @@ def compute_daily_features_for_fire(
         return (name, ds)
 
     ds_list = []
-    # for spec in client_query_specs:
-    #     out = run_one_client(spec)
-    # ds_list.append(out)
 
     # Thread pool: good for requests/HTTP, Herbie downloads, etc.
     with ThreadPoolExecutor(max_workers=min(8, len(client_query_specs))) as tpex:
@@ -158,7 +157,7 @@ cp_poly = gpd.read_file("data/cp_poly.gpkg")
 # IMPORTANT: don't pass instantiated clients into processes.
 # Pass constructors + kwargs so workers create their own.
 client_query_specs = [
-    # {"name": "esi", "client_ctor": clients.ESIClient, "client_kwargs": {}, "vars": ["DFPPM"]},
+    {"name": "esi", "client_ctor": clients.ESIClient, "client_kwargs": {}, "vars": ["DFPPM"]},
     {"name": "firms", "client_ctor": clients.FirmsClient, "client_kwargs": {}, "vars": ["frp"]},
     {"name": "us_hrrr", "client_ctor": clients.HRRRClient, "client_kwargs": {}, "vars": [
         ":TMP:2 m",
@@ -205,11 +204,6 @@ with ProcessPoolExecutor(max_workers=max_workers) as ppex:
     for cp_idx in cp_ids:
         this_poly = cp_poly[cp_poly.cp == cp_idx]
         this_cp = cp[cp.cp == cp_idx]
-        # compute_daily_features_for_fire(
-        #     cp_idx,
-        #     this_poly,
-        #     this_cp,
-        #     client_query_specs)
 
         futures.append(
             ppex.submit(
