@@ -285,8 +285,11 @@ class HRRRClient:
 
     def _remove_idx_files(self):
         print(f"[INFO] removing {len(self.index_fps)} HRRR indices...")
+        dirnames = list(set([os.path.dirname(fname) for fname in self.index_fps]))
         for fname in self.index_fps:
             os.remove(fname)
+        for dirname in dirnames:
+            os.rmdir(dirname)
         print("[INFO] HRRR indices removed")
 
 if __name__ == "__main__":
