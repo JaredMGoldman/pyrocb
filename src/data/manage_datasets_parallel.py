@@ -59,6 +59,8 @@ def skip_fire(start, end, perim):
     skip_ub = pd.Timestamp("2024-09-19")
     start = pd.Timestamp(start) if type(start) is str else start
     end = pd.Timestamp(end) if type(end) is str else end
+    if start <= pd.Timestamp('2019-06-04 00:00:00'):
+        return True
     if start >= skip_lb and start < skip_ub \
         or end > skip_lb and end <= skip_lb:
         return True
@@ -81,6 +83,10 @@ def time_bins(times):
 def safe_buffer(poly, buf=0.15):
     # buffer can occasionally create invalid geometries; buffer(0) cleans in many cases
     return poly.buffer(buf, join_style=3).buffer(0)
+
+def find_bad_data(fname):
+    df = pd.read_csv(fname)
+    import ipdb; ipdb.set_trace()
 
 def compute_daily_features_for_fire(
     cp_idx,
@@ -110,36 +116,42 @@ def compute_daily_features_for_fire(
     start = fire_tmin - pd.Timedelta(feature_start_pad)
     end   = fire_tmax + pd.Timedelta(feature_end_pad)
 
-    # --- query clients in parallel (threads: network I/O) ---
     def run_one_client_safe(spec):
+        if DEBUG_MODE:
+            return _run_one_client_safe(spec)
+        
         try:
-            name = spec["name"]
-            vars_ = spec["vars"]
-
-            # conus gating example you had
-            if is_conus(fire_poly) and name == "can_hrrr":
-                print("fire is conus and model is canadian")
-                return None
-            elif not is_conus(fire_poly) and name == "us_hrrr":
-                print("fire is not conus and model is us")
-                return None
-
-            # IMPORTANT: create the client INSIDE the worker (avoid pickling sessions, locks, etc.)
-            client_ctor = spec["client_ctor"]
-            client_kwargs = spec.get("client_kwargs", {})
-            client = client_ctor(**client_kwargs)
-            
-            ds = client.query(
-                polygon=fire_poly,
-                start=start,
-                end=end,
-                variables=vars_,
-            )
-            return (name, ds)
+            return _run_one_client_safe(spec)
         except Exception as e:
             name = spec.get("name", "unknown")
             print(f"[WARN] {name} failed: {e}")
             return None
+
+    # --- query clients in parallel (threads: network I/O) ---
+    def _run_one_client_safe(spec):
+        name = spec["name"]
+        vars_ = spec["vars"]
+
+        # conus gating example you had
+        if is_conus(fire_poly) and name == "can_hrrr":
+            print("fire is conus and model is canadian")
+            return None
+        elif not is_conus(fire_poly) and name == "us_hrrr":
+            print("fire is not conus and model is us")
+            return None
+
+        # IMPORTANT: create the client INSIDE the worker (avoid pickling sessions, locks, etc.)
+        client_ctor = spec["client_ctor"]
+        client_kwargs = spec.get("client_kwargs", {})
+        client = client_ctor(**client_kwargs)
+        
+        ds = client.query(
+            polygon=fire_poly,
+            start=start,
+            end=end,
+            variables=vars_,
+        )
+        return (name, ds)
 
     ds_list = []
     if DEBUG_MODE:
@@ -196,19 +208,32 @@ def compute_daily_features_for_fire_safe(
         feature_start_pad="1D",
         feature_end_pad="1D"
     ) -> List[Dict[str, Any]]:
-    try:
+    if DEBUG_MODE:
         return compute_daily_features_for_fire(
             cp_idx,
             this_poly_gdf,
             this_cp_df,
             client_query_specs,  # <-- dict/specs, not client instances (see below)
             DEBUG_MODE,
-            feature_start_pad="1D",
-            feature_end_pad="1D"
+            feature_start_pad=feature_start_pad,
+            feature_end_pad=feature_end_pad
         )
+    try:
+        out = compute_daily_features_for_fire(
+            cp_idx,
+            this_poly_gdf,
+            this_cp_df,
+            client_query_specs,  # <-- dict/specs, not client instances (see below)
+            DEBUG_MODE,
+            feature_start_pad=feature_start_pad,
+            feature_end_pad=feature_end_pad
+        )
+        return out
     except Exception as e:
         print(f"[WARN] {cp_idx} fire failed: {e}")
         return None
+    
+hrrr_headers = [f'hrrr_{feat}' for feat in ['dpt', 'u', 'v', 't', 'rh', 'tp', 'mstav', 'sdwe']]
 
 client_query_specs = [
     {"name": "esi", "client_ctor": clients.ESIClient, "client_kwargs": {}, "vars": ["DFPPM"]},
@@ -230,7 +255,7 @@ client_query_specs = [
         ":2t:",
         ":2d:",
     ]},
-    {"name": "modis", "client_ctor": clients.MODISClient, "client_kwargs": {}, "vars": ["MaxFRP", "FireMask"]},
+    {"name": "modis", "client_ctor": clients.MODISClient, "client_kwargs": {}, "vars": ["MaxFRP"]},
     {"name": "rave", "client_ctor": clients.RAVEClient, "client_kwargs": {}, "vars": ["FRP_MEAN", "FRP_SD", "FRE", "PM25"]},
 ]
 
@@ -250,10 +275,16 @@ def main(cp: pd.DataFrame,
     all_fires = len(cp_ids)
     random_cps = sample(cp_ids, all_fires)
     
-    # Optional: resume behavior by loading existing CSV keys
-    written_header = False
-    if pd.io.common.file_exists(feature_file):
-        written_header = True
+    header = {"cp": [], "day": []}
+    for val in client_query_specs:
+        if 'hrrr' in val['name']:
+            continue
+        for varname in val['vars']:
+            header[varname_map(val["name"], varname)] = []
+    for k in hrrr_headers:
+        header[k] = []
+    pd.DataFrame(header).to_csv(feature_file, index = False)
+    written_header = True
 
     start_time = datetime.now()
 
@@ -262,6 +293,7 @@ def main(cp: pd.DataFrame,
     flush_every_n_fires = flush_fires  # tune this
     max_workers = max_workers # tune: start with 4-8 depending on CPU/network
 
+    done_count = 0
     # Use processes for per-fire parallelism (bigger jobs)
     with ProcessPoolExecutor(max_workers=max_workers) as ppex:
         futures = []
@@ -269,12 +301,34 @@ def main(cp: pd.DataFrame,
             this_poly = cp_poly[cp_poly.cp == cp_idx]
             this_cp = cp[cp.cp == cp_idx]
             if DEBUG_MODE:
-                compute_daily_features_for_fire(
+                f = compute_daily_features_for_fire(
                         cp_idx,
                         this_poly,
                         this_cp,
                         client_query_specs,
                         DEBUG_MODE=DEBUG_MODE)
+                done_count = 0
+               
+                if f is None:
+                    done_count += 1
+                    continue
+                rows = f
+                done_count += 1
+                if rows:
+                    buffer_rows.extend(rows)
+
+                # periodic flush
+                if done_count % flush_every_n_fires == 0:
+                    if buffer_rows:
+                        df_out = pd.DataFrame(buffer_rows)
+
+                        # append mode, write header once
+                        df_out.to_csv(feature_file, mode="a", header=not written_header, index=False)
+                        written_header = True
+                        buffer_rows.clear()
+
+                    elapsed = datetime.now() - start_time
+                    print(f"{int(done_count/all_fires*100)}% fires done in {int(elapsed.total_seconds()/60)} min")
             else:
                 futures.append(
                     ppex.submit(
@@ -321,6 +375,7 @@ def main(cp: pd.DataFrame,
 
 if __name__ == "__main__":
     args = parser.parse_args()
+    # find_bad_data(os.path.join(FEATURE_OUTPUT_DIR, args.o))
 
     main(cp           = pd.read_csv(os.path.join(DATA_DIR, args.c)), 
          feature_file = os.path.join(FEATURE_OUTPUT_DIR, args.o), 

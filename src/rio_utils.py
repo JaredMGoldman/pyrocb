@@ -102,6 +102,7 @@ def open_netcdf_safe_cached(
             out_path = Path(out_path)
         out_path.unlink(missing_ok=True)
         out_path = download_file_safe(url, out_path, session, tries=3)
+
         ds = xr.open_dataset(out_path, engine=engine, **open_kwargs)
         if load:
             ds = ds.load()

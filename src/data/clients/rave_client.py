@@ -11,8 +11,8 @@ import pandas as pd
 import requests
 import xarray as xr
 
-from shapely.geometry import Polygon, MultiPolygon
-from shapely.prepared import prep
+from shapely.geometry import Polygon, MultiPolygon, Point
+from shapely import points, contains
 
 from utils import CACHE_DIR
 from rio_utils import download_file_safe, open_netcdf_safe_cached
@@ -36,6 +36,7 @@ class RAVEClient:
     cache_files: bool = False
     cache_dir: Union[str, Path] = os.path.join(CACHE_DIR, "rave_cache")
     cached_files = []
+    sampling_freq: str = "4h"
     timeout_s: int = 120
 
     # common coordinate name fallbacks
@@ -149,6 +150,7 @@ class RAVEClient:
             ds = self._subset_to_polygon(ds, polygon, drop_outside=drop_outside, bbox_first=bbox_first)
 
             dsets.append(ds)
+
         if not dsets:
             raise RuntimeError("No datasets remained after subsetting.")
         
@@ -182,25 +184,22 @@ class RAVEClient:
         return filtered_names
     
     def _get_cached_fnames(self, start_ts: pd.Timestamp, end_ts: pd.Timestamp) -> List[Dict]:
-        # consider months overlapping the window
-        start_month = pd.Timestamp(start_ts.year, start_ts.month, 1)
-        end_month = pd.Timestamp(end_ts.year, end_ts.month, 1)
-        months = pd.date_range(start_month, end_month, freq="MS")
+        date_range = pd.date_range(start_ts, end_ts, freq='d')
         fnames = []
-        for m in months:
-            year, month, day = int(m.year), int(m.month), int(m.day)
+        for date in date_range:
+            year, month, day = int(date.year), int(date.month), int(date.day)
             this_dir = os.path.join(cached_file_base, str(year))
-            [name] = [fname for fname in os.listdir(this_dir) if f"s{year:04d}{month:02d}{day:02d}" in fname]
-
-            fnames.append({ 'path' : os.path.join(this_dir, name), 
-                        'year': year,
-                        'month' : month,
-                        'day' : day})
-        return fnames
+            fnames.extend([fname for fname in os.listdir(this_dir) if f"s{year:04d}{month:02d}{day:02d}" in fname])
+        
+        out = [{ 'path' : os.path.join(this_dir, fname), 
+                    'year': year,
+                    'month' : month,
+                    'day' : day} for fname in fnames]
+        return out
 
     def _collect_files_for_range(self, start_ts: pd.Timestamp, end_ts: pd.Timestamp) -> List[Dict]:
         # consider months overlapping the window
-        hrs = pd.date_range(start_ts, end_ts, freq="h")
+        hrs = pd.date_range(start_ts, end_ts, freq=self.sampling_freq)
         months = np.unique([hr.month for hr in hrs])
         years = np.unique([hr.year for hr in hrs])
         fnames = []
@@ -291,18 +290,8 @@ class RAVEClient:
         lat_name, lon_name = self._infer_lat_lon_names(ds)
         lat = ds[lat_name]
         lon = ds[lon_name]
-        minx, miny, maxx, maxy = polygon.bounds
-
         # Case A: 1D lat/lon
         if lat.ndim == 1 and lon.ndim == 1:
-            if bbox_first:
-                lat_slice = slice(miny, maxy) if float(lat[0]) < float(lat[-1]) else slice(maxy, miny)
-                lon_slice = slice(minx, maxx) if float(lon[0]) < float(lon[-1]) else slice(maxx, minx)
-                ds = ds.sel({lat_name: lat_slice, lon_name: lon_slice})
-
-            if not drop_outside:
-                return ds
-
             lats = ds[lat_name].values
             lons = ds[lon_name].values
             lon2d, lat2d = np.meshgrid(lons, lats)
@@ -312,19 +301,6 @@ class RAVEClient:
 
         # Case B: 2D lat/lon coords (y,x)
         if lat.ndim == 2 and lon.ndim == 2:
-            y_dim, x_dim = lat.dims
-
-            if bbox_first:
-                bbox_mask = (lon >= minx) & (lon <= maxx) & (lat >= miny) & (lat <= maxy)
-                keep_y = bbox_mask.any(dim=x_dim)
-                keep_x = bbox_mask.any(dim=y_dim)
-                ds = ds.isel({y_dim: np.where(keep_y.values)[0], x_dim: np.where(keep_x.values)[0]})
-                lat = ds[lat_name]
-                lon = ds[lon_name]
-
-            if not drop_outside:
-                return ds
-            
             mask = self._polygon_mask(lat.values, lon.values, polygon)
             mask_da = xr.DataArray(mask, dims=lat.dims)
             return ds.where(mask_da, drop=True)
@@ -339,25 +315,16 @@ class RAVEClient:
         If shapely>=2 is installed, this will use vectorized contains; otherwise falls back to loop.
         """
         try:
-            import shapely  # type: ignore
-
-            # shapely>=2 vectorized path
-            if getattr(shapely, "__version__", "0").startswith("2"):
-                from shapely import points, contains  # type: ignore
-
-                pts = points(lon2d, lat2d)
-                return contains(polygon, pts)
+            pts = points(lon2d, lat2d)
+            return contains(polygon, pts)
         except Exception:
             pass
 
         # fallback: prepared geometry + Python loop (slower but dependable)
-        ppoly = prep(polygon)
         mask = np.zeros(lat2d.shape, dtype=bool)
         for j in range(lat2d.shape[0]):
             for i in range(lat2d.shape[1]):
-                mask[j, i] = ppoly.contains(
-                    type("P", (), {"x": float(lon2d[j, i]), "y": float(lat2d[j, i])})()  # minimal point-like
-                )
+                mask[j, i] = polygon.contains( Point(lon2d[j, i], lat2d[j, i]))  
         return mask
     
 if __name__ == "__main__":
