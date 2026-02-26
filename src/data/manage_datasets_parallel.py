@@ -349,7 +349,12 @@ def main(cp: pd.DataFrame,
             if f is None:
                 done_count += 1
                 continue
-            rows = f.result()
+            try:
+                rows = f.result()
+            except Exception as e:
+                print(f"[WARN] failed to load row with exception {e}")
+                done_count += 1
+                continue
             done_count += 1
 
             if rows:
