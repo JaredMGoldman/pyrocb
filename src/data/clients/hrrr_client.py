@@ -18,12 +18,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, Sequence, Optional, Union, Literal, Tuple
+from typing import Iterable, Sequence, List, Union, Literal, Tuple
 
 import logging
 import numpy as np
 import pandas as pd
 import xarray as xr
+import os
 
 from shapely.geometry import Polygon, MultiPolygon, Point
 from shapely.prepared import prep
@@ -39,6 +40,7 @@ drop_coords = ["heightAboveGround", "depthBelowLand", "valid_time"]
 
 @dataclass
 class HRRRClient:
+    index_fps = []
     product: str = "sfc"
     fxx: int = 0
     model: str = "hrrr"
@@ -85,8 +87,29 @@ class HRRRClient:
         # (Your fxx still applies.)
         times = pd.date_range(start=start_ts.floor("12H"), end=end_ts.ceil("12H"), freq=self.ifs_init_freq)
         return self.ifs_model, self.ifs_product, times
-
     def query(
+        self,
+        polygon: Geom,
+        start: Union[str, pd.Timestamp],
+        end: Union[str, pd.Timestamp],
+        variables: Sequence[str],
+        *,
+        bbox_first: bool = True,
+        time_dim: str = "time",
+    ) -> xr.Dataset:
+        try:
+            out = self._query(  polygon = polygon,
+                                start = start,
+                                end = end,
+                                variables = variables,
+                                bbox_first = bbox_first,
+                                time_dim = time_dim)
+            return out
+        except Exception as e:
+            self._remove_idx_files()
+            raise RuntimeError(f"[ERROR] HRRR failed with expection {e}")
+
+    def _query(
         self,
         polygon: Geom,
         start: Union[str, pd.Timestamp],
@@ -125,15 +148,16 @@ class HRRRClient:
         search = self._build_search_string(variables)
         dses = []
         for time in times:
-            FH = Herbie(
+            H = Herbie(
                 time,
                 model=model,
                 product=product,
                 fxx=self.fxx,
             )
             print(f"search vars: {search}")
-            dses.append(self.combine_dses(FH.xarray(search, remove_grib=self.remove_grib), time_dim))
-        
+            dses.append(self.combine_dses(H.xarray(search, remove_grib=self.remove_grib), time_dim))
+            self.index_fps.append(H.get_localIndexFilePath())
+        self._remove_idx_files()
         return xr.merge(dses, join = 'outer')
     
     def _find_lat_lon_var(self, ds):
@@ -259,6 +283,11 @@ class HRRRClient:
 
         raise ValueError(f"Unsupported lat/lon shapes: lat.ndim={lat.ndim}, lon.ndim={lon.ndim}")
 
+    def _remove_idx_files(self):
+        print(f"[INFO] removing {len(self.index_fps)} HRRR indices...")
+        for fname in self.index_fps:
+            os.remove(fname)
+        print("[INFO] HRRR indices removed")
 
 if __name__ == "__main__":
     from shapely.geometry import box
