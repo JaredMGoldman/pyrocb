@@ -120,7 +120,7 @@ class ESIClient:
         if not per_time_dsets:
             raise FileNotFoundError("No datasets were loaded for the requested time range.")
 
-        ds = xr.concat(per_time_dsets, dim="time")
+        ds = xr.merge(per_time_dsets).load()
         self._remove_cached_files()
         return ds
 

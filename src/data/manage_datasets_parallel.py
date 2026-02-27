@@ -151,7 +151,16 @@ def compute_daily_features_for_fire(
             end=end,
             variables=vars_,
         )
-        return (name, ds)
+        dates = time_bins(ds.time.values)
+        day_dict = {date : {} for date in dates.keys()}
+        for date in dates.keys():
+            # compute mean for each var
+            idx = dates[date]
+            for var_name in ds.data_vars:
+                arr = ds[var_name].isel(time=idx).values
+                day_dict[date][varname_map(name, var_name)] = float(np.nanmean(arr))
+        del ds
+        return (name, day_dict)
 
     ds_list = []
     if DEBUG_MODE:
@@ -161,7 +170,7 @@ def compute_daily_features_for_fire(
                 ds_list.append(out)
     else:
     # Thread pool: good for requests/HTTP, Herbie downloads, etc.
-        with ThreadPoolExecutor(max_workers=min(8, len(client_query_specs))) as tpex:        
+        with ThreadPoolExecutor(max_workers=min(6, len(client_query_specs))) as tpex:        
             futures = [tpex.submit(run_one_client_safe, spec) for spec in client_query_specs]
             for f in as_completed(futures):
                 out = f.result()
@@ -179,24 +188,17 @@ def compute_daily_features_for_fire(
 
     for date in dates:
         day_dict: Dict[str, Any] = {"cp": cp_idx, "day": date}
-
-        for name, ds in ds_list:
+        for _, stats in ds_list:
             # Precompute bins once per dataset
             # Assumes time_bins returns dict {datetime64[D]: indices}
-            bins = time_bins(ds.time.values)
-
-            if date not in bins:
-                continue
-
-            idx = bins[date]
-
-            # compute mean for each var
-            for var_name in ds.data_vars:
-                arr = ds[var_name].isel(time=idx).values
-                day_dict[varname_map(name, var_name)] = float(np.nanmean(arr))
-
+            for day, results in stats.items(): 
+                if day != date:
+                    continue
+                # compute mean for each var
+                for var_name, avg in results.items():
+                    day_dict[var_name] = avg
         data_per_day.append(day_dict)
-
+    
     return data_per_day
 
 def compute_daily_features_for_fire_safe(
@@ -321,10 +323,8 @@ def main(cp: pd.DataFrame,
                 if done_count % flush_every_n_fires == 0:
                     if buffer_rows:
                         df_out = pd.DataFrame(buffer_rows)
-
-                        # append mode, write header once
-                        df_out.to_csv(feature_file, mode="a", header=not written_header, index=False)
-                        written_header = True
+                        df_old = pd.read_csv(feature_file)
+                        pd.concat([df_old, df_out]).to_csv(feature_file, index = False)
                         buffer_rows.clear()
 
                     elapsed = datetime.now() - start_time
@@ -366,8 +366,8 @@ def main(cp: pd.DataFrame,
                     df_out = pd.DataFrame(buffer_rows)
 
                     # append mode, write header once
-                    df_out.to_csv(feature_file, mode="a", header=not written_header, index=False)
-                    written_header = True
+                    df_old = pd.read_csv(feature_file)
+                    pd.concat([df_old, df_out]).to_csv(feature_file, index = False)
                     buffer_rows.clear()
 
                 elapsed = datetime.now() - start_time

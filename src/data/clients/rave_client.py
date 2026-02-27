@@ -154,7 +154,7 @@ class RAVEClient:
         if not dsets:
             raise RuntimeError("No datasets remained after subsetting.")
         
-        out = xr.merge(dsets)
+        out = xr.merge(dsets).load()
         self._remove_cached_files()
         return out
 

@@ -20,6 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable, Sequence, List, Union, Literal, Tuple
 
+from pathlib import Path
 import logging
 import numpy as np
 import pandas as pd
@@ -30,6 +31,23 @@ from shapely.geometry import Polygon, MultiPolygon, Point
 from shapely.prepared import prep
 
 from herbie import Herbie, FastHerbie
+import uuid
+import shutil
+from datetime import datetime, timezone
+import socket
+
+def make_run_id() -> str:
+    # Example: run_20260226T235901Z_5f2c9c3a0b8c4d8aa2a1a0f5b7b20d3e
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    u = uuid.uuid4().hex
+    return f"{ts}_{u}"
+
+def make_cache_dir(base: Path, prefix: str = "cache") -> Path:
+    run_id = make_run_id()
+    pid = os.getpid()
+    d = base / f"{run_id}_pid{pid}"
+    d.mkdir(parents=True, exist_ok=False)
+    return d
 
 Geom = Union[Polygon, MultiPolygon]
 Freq = Literal["1H", "1h", "60min"]
@@ -56,6 +74,10 @@ class HRRRClient:
 
     # NEW: CONUS bbox heuristic (lon/lat)
     conus_bbox: Tuple[float, float, float, float] = (-125.0, 24.0, -66.0, 50.0)
+
+    def __init__(self, *args, **kwargs):
+        self.save_dir = make_cache_dir(Path(f"{os.environ.get('HOME')}/data/herbie"), prefix="")
+        # self.save_dir = f"{os.environ.get('HOME')}/data/herbie/.{uuid.uuid4().hex}"
 
     def _polygon_in_conus(self, polygon: Geom) -> bool:
         minx, miny, maxx, maxy = polygon.bounds
@@ -103,7 +125,8 @@ class HRRRClient:
                                 end = end,
                                 variables = variables,
                                 bbox_first = bbox_first,
-                                time_dim = time_dim)
+                                time_dim = time_dim).load()
+            self._remove_idx_files()
             return out
         except Exception as e:
             self._remove_idx_files()
@@ -153,11 +176,11 @@ class HRRRClient:
                 model=model,
                 product=product,
                 fxx=self.fxx,
+                save_dir = self.save_dir,
             )
             print(f"search vars: {search}")
             dses.append(self.combine_dses(H.xarray(search, remove_grib=self.remove_grib), time_dim))
             self.index_fps.append(H.get_localIndexFilePath())
-        self._remove_idx_files()
         return xr.merge(dses, join = 'outer')
     
     def _find_lat_lon_var(self, ds):
@@ -285,11 +308,12 @@ class HRRRClient:
 
     def _remove_idx_files(self):
         print(f"[INFO] removing {len(self.index_fps)} HRRR indices...")
-        dirnames = list(set([os.path.dirname(fname) for fname in self.index_fps]))
-        for fname in self.index_fps:
-            os.remove(fname)
-        for dirname in dirnames:
-            os.rmdir(dirname)
+        # dirnames = list(set([os.path.dirname(fname) for fname in self.index_fps]))
+        # for fname in self.index_fps:
+        #     os.remove(fname)
+        # for dirname in dirnames:
+        #     os.rmdir(dirname)
+        shutil.rmtree(self.save_dir)
         print("[INFO] HRRR indices removed")
 
 if __name__ == "__main__":

@@ -106,7 +106,7 @@ class FirmsClient:
         # Build time coordinate if possible
         df_src = self._add_time_column_if_possible(df_src)
         
-        out = df_src.set_index(['time','latitude','longitude']).to_xarray()[variables]
+        out = df_src.set_index(['time','latitude','longitude']).to_xarray().load()[variables]
         return out
 
     # -------------------------

@@ -153,7 +153,7 @@ class MODISClient:
         if drop_outside:
             ds_all = self._mask_to_polygon(ds_all, poly)
         
-        ds_all = add_lonlat_coords(ds_all)
+        ds_all = add_lonlat_coords(ds_all).load()
 
         self._remove_cached_files()
         return ds_all
