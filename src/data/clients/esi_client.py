@@ -16,7 +16,7 @@ import rioxarray  # requires rasterio + GDAL
 import geopandas as gpd
 from shapely.geometry import Polygon, MultiPolygon
 
-from utils import CACHE_DIR, make_cache_dir, add_cell_polygons_coord
+from utils import CACHE_BASE_DIR, make_cache_dir, buffer_polygon_meters
 from rio_utils import validate_tif_download
 import shutil
 
@@ -42,9 +42,7 @@ class ESIClient:
     timeout_s: int = 120
 
     def __init__(self):
-        self.save_dir = make_cache_dir(Path(f"{os.environ.get('SCRATCH')}/data/cache/esi"))
-
-    def __post_init__(self):
+        self.save_dir = make_cache_dir(Path(f"{CACHE_BASE_DIR}/esi"))
         self.save_dir = Path(self.save_dir)
         self.save_dir.mkdir(parents=True, exist_ok=True)
         self._session = requests.Session()
@@ -110,6 +108,7 @@ class ESIClient:
                 da = self._open_tif_as_dataarray(tif, var_name=var)
 
                 if clip:
+                    polygon = buffer_polygon_meters(polygon, resolution_m=4000, factor = 1.0)
                     da = self._clip_dataarray_to_polygon(da, polygon, drop=drop)
 
                 # ensure we have y/x dims (rioxarray uses y/x)
@@ -191,7 +190,6 @@ class ESIClient:
         # rioxarray expects a GeoDataFrame/GeoSeries geometry with CRS.
         gdf = gpd.GeoDataFrame({"geometry": [polygon]}, crs="EPSG:4326")
 
-        da = add_cell_polygons_coord(da, resolution_m=4000)
         # Reproject polygon into raster CRS if needed
         if da.rio.crs is not None and str(da.rio.crs).upper() != "EPSG:4326":
             gdf = gdf.to_crs(da.rio.crs)

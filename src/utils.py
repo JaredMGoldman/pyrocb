@@ -17,6 +17,8 @@ import rasterio
 import pyproj
 from datetime import datetime, timezone
 import uuid
+from shapely.ops import transform
+import pyproj
 
 def make_run_id() -> str:
     # Example: run_20260226T235901Z_5f2c9c3a0b8c4d8aa2a1a0f5b7b20d3e
@@ -242,88 +244,57 @@ def add_lonlat_coords(ds):
         latitude=(("y","x"), lat)
     )
 
-def add_cell_polygons_coord(
-    ds: xr.Dataset,
+def buffer_polygon_meters(
+    geom: Polygon,
     resolution_m: float,
     *,
-    lat_name: str = "latitude",
-    lon_name: str = "longitude",
-    out_coord_name: str = "cell_polygon",
-) -> xr.Dataset:
+    factor: float = 0.5,
+    cap_style: int = 1,
+    join_style: int = 1,
+) -> Polygon:
     """
-    Add a coordinate of Shapely polygons representing an approximate square grid-cell footprint
-    centered at each (lat, lon) coordinate.
+    Buffer a lon/lat (EPSG:4326) Polygon/MultiPolygon by (factor * resolution_m) meters.
 
     Parameters
     ----------
-    ds : xr.Dataset
-        Dataset containing latitude/longitude coordinates as DataArrays.
-        Works for 2D (y,x) or 1D (lat,lon) coords; output coord matches the lat/lon shape.
+    geom : shapely Polygon or MultiPolygon
+        Geometry in EPSG:4326 (lon/lat degrees).
     resolution_m : float
-        Side length of the square cell in meters.
-    lat_name, lon_name : str
-        Names of the latitude and longitude coordinates/variables in ds.
-    out_coord_name : str
-        Name of the new polygon coordinate to create.
+        Dataset resolution in meters (e.g., 3000 for 3km grid).
+    factor : float
+        Multiply resolution_m by this factor for the buffer distance.
+        - Use 0.5 to include points whose *centers* are within half a cell of the polygon boundary.
+        - Use 1.0 to be more conservative (include full-cell neighborhood).
+    cap_style : int
+        1=round, 2=flat, 3=square (shapely buffer cap style).
+    join_style : int
+        1=round, 2=mitre, 3=bevel (shapely buffer join style).
 
     Returns
     -------
-    xr.Dataset
-        Same dataset with an added coordinate `out_coord_name` containing Shapely polygons.
-
-    Notes
-    -----
-    - Uses an equirectangular degrees-per-meter approximation:
-        dlat = meters / 111_320
-        dlon = meters / (111_320 * cos(lat))
-      which is generally fine for small cells and mid-latitudes.
-    - If your ds is very large, consider generating polygons only for a subset
-      or generating them on-the-fly when needed.
+    shapely geometry
+        Buffered geometry back in EPSG:4326.
     """
-    if lat_name not in ds or lon_name not in ds:
-        # also allow coords
-        if lat_name not in ds.coords or lon_name not in ds.coords:
-            raise KeyError(f"Could not find {lat_name=} and {lon_name=} in ds variables/coords.")
+    if geom.is_empty:
+        return geom
 
-    lat = ds[lat_name]
-    lon = ds[lon_name]
+    dist_m = float(resolution_m) * float(factor)
 
-    if lat.shape != lon.shape:
-        raise ValueError(f"lat and lon must have the same shape. Got {lat.shape=} vs {lon.shape=}.")
+    # Choose a local UTM zone based on centroid (good default for buffering)
+    lon0, lat0 = geom.centroid.x, geom.centroid.y
+    zone = int((lon0 + 180) // 6) + 1
+    epsg = 32600 + zone if lat0 >= 0 else 32700 + zone  # WGS84 UTM north/south
 
-    latv = np.asarray(lat.values)
-    lonv = np.asarray(lon.values)
+    # Project to meters, buffer, project back
+    to_utm = pyproj.Transformer.from_crs("EPSG:4326", f"EPSG:{epsg}", always_xy=True).transform
+    to_ll  = pyproj.Transformer.from_crs(f"EPSG:{epsg}", "EPSG:4326", always_xy=True).transform
 
-    # Convert meters -> degrees (approx)
-    meters_per_degree = 111_320.0
-    half = 0.5 * float(resolution_m)
+    geom_utm = transform(to_utm, geom)
+    geom_buf_utm = geom_utm.buffer(dist_m, cap_style=cap_style, join_style=join_style)
+    geom_buf_ll = transform(to_ll, geom_buf_utm)
 
-    dlat = (half / meters_per_degree)  # half-side in degrees latitude
-
-    # avoid division by zero near poles
-    coslat = np.cos(np.deg2rad(latv))
-    coslat = np.clip(coslat, 1e-8, None)
-    dlon = (half / (meters_per_degree * coslat))  # half-side in degrees longitude
-
-    # Build polygon array (object dtype)
-    poly_arr = np.empty(latv.shape, dtype=object)
-
-    # Fill; iterate flat for speed without huge Python nested loops
-    lat_flat = latv.ravel()
-    lon_flat = lonv.ravel()
-    dlon_flat = np.asarray(dlon).ravel()
-
-    for i in range(lat_flat.size):
-        la = float(lat_flat[i])
-        lo = float(lon_flat[i])
-        dlo = float(dlon_flat[i])
-        poly_arr.ravel()[i] = box(lo - dlo, la - dlat, lo + dlo, la + dlat)
-
-    # Attach as a coordinate with the same dims as lat/lon
-    poly_da = xr.DataArray(poly_arr, dims=lat.dims, coords=lat.coords, name=out_coord_name)
-
-    return ds.assign_coords({out_coord_name: poly_da})
-
+    return geom_buf_ll
+    
 ML_DATA_ROOT = os.path.join(f"{os.sep}data","lthapa","data2restore","lthapa","ML_daily")
 
 OUTPUTS_DIR = os.path.join(get_repo_root(), "outputs")
@@ -333,4 +304,5 @@ FEATURE_OUTPUT_DIR = os.path.join(OUTPUTS_DIR, "features")
 DATA_DIR = os.path.join(get_repo_root(), "src", "data")
 CLIENTS_DIR = os.path.join(DATA_DIR,"clients")
 CACHE_DIR = os.path.join(CLIENTS_DIR,"cache")
+CACHE_BASE_DIR = Path(f"{os.environ.get('HOME')}/data/cache") # Path(f"{os.environ.get('SCRATCH')}/data/cache")
 FIRMS_KEY_FNAME = "firms.key"

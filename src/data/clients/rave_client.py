@@ -15,14 +15,14 @@ from shapely.geometry import Polygon, MultiPolygon, Point
 from shapely import points, contains
 import shutil
 
-from utils import make_cache_dir, add_cell_polygons_coord
+from utils import make_cache_dir, buffer_polygon_meters, CACHE_BASE_DIR
 from rio_utils import download_file_safe, open_netcdf_safe_cached
 
 Geom = Union[Polygon, MultiPolygon]
 
 cached_file_lb = pd.Timestamp("07-01-2019")
 cached_file_ub = pd.Timestamp("12-31-2023")
-cached_file_base = "/u/scratch/j/jgoldman/data/RAVE"
+cached_file_base = "/home/jaredgoldman/data/RAVE" # "/u/scratch/j/jgoldman/data/RAVE"
 
 @dataclass
 class RAVEClient:
@@ -49,9 +49,7 @@ class RAVEClient:
     )
 
     def __init__(self):
-        self.save_dir = make_cache_dir(Path(f"{os.environ.get('SCRATCH')}/data/cache/rave"))
-
-    def __post_init__(self):
+        self.save_dir = make_cache_dir(Path(f"{CACHE_BASE_DIR}/rave"))
         self.save_dir = Path(self.save_dir)
         self.save_dir.mkdir(parents=True, exist_ok=True)
         self._session = requests.Session()
@@ -116,6 +114,7 @@ class RAVEClient:
 
         # Collect candidate file URLs by scanning only the needed YYYY/MM dirs
         is_cached = start_ts >= cached_file_lb and end_ts <= cached_file_ub
+        polygon = buffer_polygon_meters(polygon, resolution_m=3000, factor = 1.0)
 
         if is_cached:
             files = self._get_cached_fnames(start_ts, end_ts) 
@@ -295,6 +294,7 @@ class RAVEClient:
         lat_name, lon_name = self._infer_lat_lon_names(ds)
         lat = ds[lat_name]
         lon = ds[lon_name]
+        
         # Case A: 1D lat/lon
         if lat.ndim == 1 and lon.ndim == 1:
             lats = ds[lat_name].values
@@ -320,7 +320,6 @@ class RAVEClient:
         If shapely>=2 is installed, this will use vectorized contains; otherwise falls back to loop.
         """
         try:
-            # add_cell_polygons_coord(resolution_m=3000)
             pts = points(lon2d, lat2d)
             return contains(polygon, pts)
         except Exception:

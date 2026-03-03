@@ -33,7 +33,7 @@ from shapely.prepared import prep
 from herbie import Herbie
 import shutil
 
-from utils import make_cache_dir, add_cell_polygons_coord
+from utils import make_cache_dir, buffer_polygon_meters, CACHE_BASE_DIR
 
 Geom = Union[Polygon, MultiPolygon]
 Freq = Literal["1H", "1h", "60min"]
@@ -62,8 +62,7 @@ class HRRRClient:
     conus_bbox: Tuple[float, float, float, float] = (-125.0, 24.0, -66.0, 50.0)
 
     def __init__(self, *args, **kwargs):
-        self.save_dir = make_cache_dir(Path(f"{os.environ.get('SCRATCH')}/data/herbie"))
-        # self.save_dir = f"{os.environ.get('HOME')}/data/herbie/.{uuid.uuid4().hex}"
+        self.save_dir = make_cache_dir(Path(f"{CACHE_BASE_DIR}/herbie"))
 
     def _polygon_in_conus(self, polygon: Geom) -> bool:
         minx, miny, maxx, maxy = polygon.bounds
@@ -72,7 +71,7 @@ class HRRRClient:
 
     def _choose_model_product_and_times(
         self, polygon: Geom, start_ts: pd.Timestamp, end_ts: pd.Timestamp
-    ) -> tuple[str, str, pd.DatetimeIndex]:
+    ) -> tuple[str, str, int, pd.DatetimeIndex]:
         """
         Returns (model, product, init_times).
 
@@ -88,13 +87,15 @@ class HRRRClient:
 
         if not use_ifs:
             times = pd.date_range(start=start_ts, end=end_ts, freq=self.freq)
-            return self.model, self.product, times
+            return self.model, self.product, 3000, times
 
         # IFS fallback
         # Use 12-hourly init times; Herbie will fetch grib for each init+fxx
         # (Your fxx still applies.)
         times = pd.date_range(start=start_ts.floor("12H"), end=end_ts.ceil("12H"), freq=self.ifs_init_freq)
-        return self.ifs_model, self.ifs_product, times
+
+        return self.ifs_model, self.ifs_product, 9000, times
+    
     def query(
         self,
         polygon: Geom,
@@ -149,7 +150,8 @@ class HRRRClient:
             raise ValueError("end must be >= start")
 
         # HRRR is hourly; build list of initialization times (commonly UTC)
-        model, product, times = self._choose_model_product_and_times(polygon, start_ts, end_ts)
+        model, product, resolution, times = self._choose_model_product_and_times(polygon, start_ts, end_ts)
+        polygon =  buffer_polygon_meters(polygon, resolution_m=resolution, factor = 1.0)
 
         if len(times) == 0:
             raise ValueError("Empty time range after applying model-specific frequency.")
@@ -165,7 +167,8 @@ class HRRRClient:
                 save_dir = self.save_dir,
             )
             print(f"search vars: {search}")
-            dses.append(self.combine_dses(H.xarray(search, remove_grib=self.remove_grib), time_dim))
+
+            dses.append(self.combine_dses(H.xarray(search, remove_grib=self.remove_grib), polygon, time_dim))
             self.index_fps.append(H.get_localIndexFilePath())
         return xr.merge(dses, join = 'outer')
     
@@ -182,9 +185,10 @@ class HRRRClient:
             lon_var = "x"
         return lat_var, lon_var
     
-    def combine_dses(self, all_dses, time_dim):
+    def combine_dses(self, all_dses, polygon, time_dim):
         dses = []
         for ds in all_dses:
+            ds = self._clip_to_polygon(ds, polygon)
             ds = ds.expand_dims(time=[ds[time_dim].values]).drop_attrs()
             coords_to_rm = [coord for coord in drop_coords if coord in ds._coord_names]
             new_ds = ds.drop_vars(coords_to_rm)
@@ -240,7 +244,6 @@ class HRRRClient:
         lat = ds[lat_name]
         lon = ds[lon_name]
 
-        poly_prep = prep(polygon)
         minx, miny, maxx, maxy = polygon.bounds
 
         # -------------------------
@@ -261,7 +264,7 @@ class HRRRClient:
             latv = lat.values
             mask = np.zeros(lonv.shape, dtype=bool)
             for j in range(lonv.shape[0]):
-                mask[j, :] = [poly_prep.contains(Point(lonv[j, i], latv[j, i])) for i in range(lonv.shape[1])]
+                mask[j, :] = [polygon.contains(Point(lonv[j, i], latv[j, i])) for i in range(lonv.shape[1])]
 
             return ds.where(xr.DataArray(mask, dims=(y_dim, x_dim)), drop=True)
 
@@ -285,7 +288,7 @@ class HRRRClient:
             lon2d, lat2d = np.meshgrid(lon.values, lat.values)
             mask = np.zeros(lon2d.shape, dtype=bool)
             for j in range(lon2d.shape[0]):
-                mask[j, :] = [poly_prep.contains(Point(lon2d[j, i], lat2d[j, i])) for i in range(lon2d.shape[1])]
+                mask[j, :] = [polygon.contains(Point(lon2d[j, i], lat2d[j, i])) for i in range(lon2d.shape[1])]
 
             mask_da = xr.DataArray(mask, dims=(lat_dim, lon_dim))
             return ds.where(mask_da, drop=True)

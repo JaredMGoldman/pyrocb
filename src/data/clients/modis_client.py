@@ -13,14 +13,13 @@ import requests
 import xarray as xr
 import geopandas as gpd
 from shapely.geometry import Polygon, MultiPolygon
-from shapely.prepared import prep
 import shutil
-from rio_utils import validate_tif_download, download_file_safe, open_geotiff_safe, open_netcdf_safe, open_netcdf_safe_cached
+from rio_utils import download_file_safe, open_geotiff_safe
 
 # Optional but recommended for HDF-EOS -> xarray
-import rioxarray  # noqa: F401  (pip install rioxarray rasterio; conda-forge often easiest)
 import rasterio
-from utils import CLIENTS_DIR, add_lonlat_coords, make_cache_dir, add_cell_polygons_coord
+from utils import add_lonlat_coords, make_cache_dir, buffer_polygon_meters, \
+                    CLIENTS_DIR, CACHE_BASE_DIR
 import os
 
 
@@ -49,15 +48,13 @@ class MODISClient:
     R: float = 6371007.181
 
     def __init__(self):
-        self.save_dir = make_cache_dir(Path(f"{os.environ.get('SCRATCH')}/data/cache/modis"))
-        
-    def __post_init__(self):
+        self.save_dir = make_cache_dir(Path(f"{CACHE_BASE_DIR}/modis"))
         self.save_dir = Path(self.save_dir)
         self.save_dir.mkdir(parents=True, exist_ok=True)
         self._token = self._read_token(self.key_file)
         self._session = requests.Session()
         self._session.headers.update({"Authorization": f"Bearer {self._token}"})
-
+        
     # -------------------------
     # Public API
     # -------------------------
@@ -101,7 +98,7 @@ class MODISClient:
         Returns:
           xr.Dataset with dims typically (time, y, x)
         """
-        poly = polygon
+        poly = buffer_polygon_meters(polygon, resolution_m=500, factor = 1)
         if isinstance(poly, MultiPolygon):
             poly = MultiPolygon(poly.geoms)  # keep; prepared uses it fine
 
@@ -119,18 +116,24 @@ class MODISClient:
         # download needed files
         local_files = []
         doy_buckets = {}
+        fname_map = {}
         for d in days:
             year = d.year
             doy = int(d.strftime("%j"))
             bucket = int((doy - 1)/8)*8+1
             position = (doy - 1) % 8 + 1
+            my_date = pd.Timestamp(year=year, month=1, day=1) + pd.Timedelta(days=bucket + position - 2)
             if not bucket in doy_buckets.keys():
                 fname = self._download_day_tiles(year, bucket, tiles)
                 self.cached_files.extend(fname)
                 local_files.extend(fname)
                 doy_buckets[bucket] = [position]
+                for fn in fname:
+                    fname_map[fn] = {'positions' : [position], 'dates' : [my_date]}
             else:
-                doy_buckets[bucket].append(position)
+                for fn in fname:
+                    fname_map[fn]['positions'].append(position)
+                    fname_map[fn]['dates'].append(my_date)
 
         if not local_files:
             raise FileNotFoundError("No matching files found/downloaded for requested range/tiles.")
@@ -138,16 +141,15 @@ class MODISClient:
         # Open files -> xarray list per time, then concat
         dsets = []
         for fp in local_files:
-            bucket = int(fp.split(os.sep)[-2])
+            positions = fname_map[fn]['positions']
+            my_dates = fname_map[fn]['dates']
             try:
-                ds = self._open_hdf_as_dataset(fp, variables=variables, regex=prefer_subdatasets_regex, days = doy_buckets[bucket])
+                ds = self._open_hdf_as_dataset(fp, variables=variables, regex=prefer_subdatasets_regex, days = positions)
             except:
                 raise RuntimeError("unable to open MODIS data...")
-            # attach time from filename AYYYYDDD
-            year = int(fp.split(os.sep)[-3])
-            ts = self._times_from_buckets(year, bucket, doy_buckets[bucket])
-            if ts is not None:
-                ds = ds.expand_dims(time=ts)
+            
+            if my_dates is not None:
+                ds = ds.expand_dims(time=my_dates)
             dsets.append(ds)
 
         ds_all = xr.concat(dsets, dim="time")
@@ -267,12 +269,12 @@ class MODISClient:
                 local = self.save_dir / name.split(os.sep)[-1]
                 local.parent.mkdir(parents=True, exist_ok=True)
                 if not local.exists() or local.stat().st_size == 0:
-                    self._download_file(year, doy, name, local)
+                    self._download_file(name, local)
                 out.append(str(local))
         return out
 
-    def _download_file(self, year: int, doy: int, filename: str, out_path: Path) -> None:
-        url = self._dir_url(year, doy) + filename
+    def _download_file(self, filename: str, out_path: Path) -> None:
+        url = filename
         download_file_safe(url, out_path, self._session)
 
     def _remove_cached_files(self):
@@ -287,11 +289,6 @@ class MODISClient:
         if not token:
             raise ValueError(f"No token found in {key_file}")
         return token
-
-    @staticmethod
-    def _times_from_buckets(y:int, doy: int, offsets: List[int]) -> List[np.datetime64]:
-        ts = [pd.Timestamp(year=y, month=1, day=1) + pd.Timedelta(days=doy + offset - 2) for offset in offsets]
-        return [np.datetime64(t.to_datetime64()) for t in ts]
 
     # -------------------------
     # HDF -> xarray
@@ -356,7 +353,7 @@ class MODISClient:
         try:            # Reproject polygon into raster CRS if needed
             if ds.rio.crs is not None and str(ds.rio.crs).upper() != "EPSG:4326":
                 gdf = gdf.to_crs(ds.rio.crs)
-            # add_cell_polygons_coord(resolution = 500)
+
             mask = geometry_mask(
                 geometries=[geom.__geo_interface__ for geom in gdf.geometry],
                 out_shape=(ds.sizes["y"], ds.sizes["x"]),

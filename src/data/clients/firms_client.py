@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import date
 from io import StringIO
-from typing import Dict, Iterable, List, Literal, Optional, Sequence, Tuple, Union
-from utils import FIRMS_KEY_FNAME, CLIENTS_DIR, set_env_var, add_cell_polygons_coord
+from typing import Dict, List, Literal, Optional, Sequence, Tuple, Union
+from utils import FIRMS_KEY_FNAME, CLIENTS_DIR, set_env_var, buffer_polygon_meters
 # 375m accuracy
 
 import os
@@ -60,7 +59,7 @@ class FirmsClient:
         end: Union[str, date, pd.Timestamp],
         variables: List[str],
         *,
-        source: Sequence[FirmsSources] = "VIIRS_NOAA20_SP", # ["VIIRS_NOAA21_SP"],
+        source: Sequence[FirmsSources] = "VIIRS_NOAA20_NRT", # ["VIIRS_NOAA21_SP"],
         crs: str = "EPSG:4326",
         return_by_source: bool = False,
     ) -> Union[xr.Dataset, Dict[str, xr.Dataset]]:
@@ -76,8 +75,9 @@ class FirmsClient:
         end_ts = pd.Timestamp(end).normalize()
         if end_ts < start_ts:
             raise ValueError("end must be >= start")
-
-        west, south, east, north = self._polygon_bounds_wsen(polygon)
+        
+        buffered_polygon = buffer_polygon_meters(polygon, resolution_m=375, factor = 1)
+        west, south, east, north = self._polygon_bounds_wsen(buffered_polygon)
         windows = self._chunk_date_range(start_ts, end_ts, max_days=5)
 
         session = self._session()
@@ -100,9 +100,6 @@ class FirmsClient:
             return df_src
 
         df_src = self._dedupe_df(df_src)
-
-        # Clip precisely to polygon (still in lon/lat)
-        df_src = self._clip_df_to_polygon(df_src, polygon)
 
         # Build time coordinate if possible
         df_src = self._add_time_column_if_possible(df_src)
@@ -185,23 +182,6 @@ class FirmsClient:
         if key_cols:
             return df.drop_duplicates(subset=key_cols).reset_index(drop=True)
         return df.drop_duplicates().reset_index(drop=True)
-
-    @staticmethod
-    def _clip_df_to_polygon(df: pd.DataFrame, polygon: Geom) -> pd.DataFrame:
-        if df.empty:
-            return df
-        
-        # add_cell_polygons_coord(resolution = 375)
-
-        gdf = gpd.GeoDataFrame(
-            df,
-            geometry=gpd.points_from_xy(df["longitude"], df["latitude"]),
-            crs="EPSG:4326",
-        )
-        poly_gdf = gpd.GeoDataFrame({"geometry": [polygon]}, crs="EPSG:4326")
-        clipped = gpd.sjoin(gdf, poly_gdf, predicate="within", how="inner").drop(columns="index_right")
-        clipped = pd.DataFrame(clipped.drop(columns=["geometry"]))
-        return clipped.reset_index(drop=True)
 
     @staticmethod
     def _add_time_column_if_possible(df: pd.DataFrame) -> pd.DataFrame:

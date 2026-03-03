@@ -239,7 +239,7 @@ hrrr_headers = [f'hrrr_{feat}' for feat in ['dpt', 'u', 'v', 't', 'rh', 'tp', 'm
 
 client_query_specs = [
     {"name": "esi", "client_ctor": clients.ESIClient, "client_kwargs": {}, "vars": ["DFPPM"]},
-    # {"name": "firms", "client_ctor": clients.FirmsClient, "client_kwargs": {}, "vars": ["frp"]},
+    {"name": "firms", "client_ctor": clients.FirmsClient, "client_kwargs": {}, "vars": ["frp"]},
     {"name": "us_hrrr", "client_ctor": clients.HRRRClient, "client_kwargs": {}, "vars": [
         ":TMP:2 m",
         ":DPT:2 m",
