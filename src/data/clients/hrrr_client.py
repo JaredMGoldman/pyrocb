@@ -33,7 +33,7 @@ from shapely.prepared import prep
 from herbie import Herbie
 import shutil
 
-from utils import make_cache_dir
+from utils import make_cache_dir, add_cell_polygons_coord
 
 Geom = Union[Polygon, MultiPolygon]
 Freq = Literal["1H", "1h", "60min"]

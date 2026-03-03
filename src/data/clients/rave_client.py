@@ -15,7 +15,7 @@ from shapely.geometry import Polygon, MultiPolygon, Point
 from shapely import points, contains
 import shutil
 
-from utils import make_cache_dir
+from utils import make_cache_dir, add_cell_polygons_coord
 from rio_utils import download_file_safe, open_netcdf_safe_cached
 
 Geom = Union[Polygon, MultiPolygon]
@@ -320,6 +320,7 @@ class RAVEClient:
         If shapely>=2 is installed, this will use vectorized contains; otherwise falls back to loop.
         """
         try:
+            # add_cell_polygons_coord(resolution_m=3000)
             pts = points(lon2d, lat2d)
             return contains(polygon, pts)
         except Exception:

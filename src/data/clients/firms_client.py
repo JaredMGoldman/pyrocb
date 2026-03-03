@@ -4,7 +4,8 @@ from dataclasses import dataclass
 from datetime import date
 from io import StringIO
 from typing import Dict, Iterable, List, Literal, Optional, Sequence, Tuple, Union
-from utils import FIRMS_KEY_FNAME, CLIENTS_DIR, set_env_var
+from utils import FIRMS_KEY_FNAME, CLIENTS_DIR, set_env_var, add_cell_polygons_coord
+# 375m accuracy
 
 import os
 import numpy as np
@@ -189,6 +190,8 @@ class FirmsClient:
     def _clip_df_to_polygon(df: pd.DataFrame, polygon: Geom) -> pd.DataFrame:
         if df.empty:
             return df
+        
+        # add_cell_polygons_coord(resolution = 375)
 
         gdf = gpd.GeoDataFrame(
             df,

@@ -20,7 +20,7 @@ from rio_utils import validate_tif_download, download_file_safe, open_geotiff_sa
 # Optional but recommended for HDF-EOS -> xarray
 import rioxarray  # noqa: F401  (pip install rioxarray rasterio; conda-forge often easiest)
 import rasterio
-from utils import CLIENTS_DIR, add_lonlat_coords, make_cache_dir
+from utils import CLIENTS_DIR, add_lonlat_coords, make_cache_dir, add_cell_polygons_coord
 import os
 
 
@@ -356,7 +356,7 @@ class MODISClient:
         try:            # Reproject polygon into raster CRS if needed
             if ds.rio.crs is not None and str(ds.rio.crs).upper() != "EPSG:4326":
                 gdf = gdf.to_crs(ds.rio.crs)
-
+            # add_cell_polygons_coord(resolution = 500)
             mask = geometry_mask(
                 geometries=[geom.__geo_interface__ for geom in gdf.geometry],
                 out_shape=(ds.sizes["y"], ds.sizes["x"]),

@@ -7,7 +7,7 @@ import geopandas as gpd
 from os.path import exists
 from joblib import dump, Parallel, delayed
 from pathlib import Path
-from shapely.geometry import Polygon, Point
+from shapely.geometry import Polygon, Point, box
 import subprocess
 import time
 import re
@@ -241,6 +241,89 @@ def add_lonlat_coords(ds):
         longitude=(("y","x"), lon),
         latitude=(("y","x"), lat)
     )
+
+def add_cell_polygons_coord(
+    ds: xr.Dataset,
+    resolution_m: float,
+    *,
+    lat_name: str = "latitude",
+    lon_name: str = "longitude",
+    out_coord_name: str = "cell_polygon",
+) -> xr.Dataset:
+    """
+    Add a coordinate of Shapely polygons representing an approximate square grid-cell footprint
+    centered at each (lat, lon) coordinate.
+
+    Parameters
+    ----------
+    ds : xr.Dataset
+        Dataset containing latitude/longitude coordinates as DataArrays.
+        Works for 2D (y,x) or 1D (lat,lon) coords; output coord matches the lat/lon shape.
+    resolution_m : float
+        Side length of the square cell in meters.
+    lat_name, lon_name : str
+        Names of the latitude and longitude coordinates/variables in ds.
+    out_coord_name : str
+        Name of the new polygon coordinate to create.
+
+    Returns
+    -------
+    xr.Dataset
+        Same dataset with an added coordinate `out_coord_name` containing Shapely polygons.
+
+    Notes
+    -----
+    - Uses an equirectangular degrees-per-meter approximation:
+        dlat = meters / 111_320
+        dlon = meters / (111_320 * cos(lat))
+      which is generally fine for small cells and mid-latitudes.
+    - If your ds is very large, consider generating polygons only for a subset
+      or generating them on-the-fly when needed.
+    """
+    if lat_name not in ds or lon_name not in ds:
+        # also allow coords
+        if lat_name not in ds.coords or lon_name not in ds.coords:
+            raise KeyError(f"Could not find {lat_name=} and {lon_name=} in ds variables/coords.")
+
+    lat = ds[lat_name]
+    lon = ds[lon_name]
+
+    if lat.shape != lon.shape:
+        raise ValueError(f"lat and lon must have the same shape. Got {lat.shape=} vs {lon.shape=}.")
+
+    latv = np.asarray(lat.values)
+    lonv = np.asarray(lon.values)
+
+    # Convert meters -> degrees (approx)
+    meters_per_degree = 111_320.0
+    half = 0.5 * float(resolution_m)
+
+    dlat = (half / meters_per_degree)  # half-side in degrees latitude
+
+    # avoid division by zero near poles
+    coslat = np.cos(np.deg2rad(latv))
+    coslat = np.clip(coslat, 1e-8, None)
+    dlon = (half / (meters_per_degree * coslat))  # half-side in degrees longitude
+
+    # Build polygon array (object dtype)
+    poly_arr = np.empty(latv.shape, dtype=object)
+
+    # Fill; iterate flat for speed without huge Python nested loops
+    lat_flat = latv.ravel()
+    lon_flat = lonv.ravel()
+    dlon_flat = np.asarray(dlon).ravel()
+
+    for i in range(lat_flat.size):
+        la = float(lat_flat[i])
+        lo = float(lon_flat[i])
+        dlo = float(dlon_flat[i])
+        poly_arr.ravel()[i] = box(lo - dlo, la - dlat, lo + dlo, la + dlat)
+
+    # Attach as a coordinate with the same dims as lat/lon
+    poly_da = xr.DataArray(poly_arr, dims=lat.dims, coords=lat.coords, name=out_coord_name)
+
+    return ds.assign_coords({out_coord_name: poly_da})
+
 ML_DATA_ROOT = os.path.join(f"{os.sep}data","lthapa","data2restore","lthapa","ML_daily")
 
 OUTPUTS_DIR = os.path.join(get_repo_root(), "outputs")

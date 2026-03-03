@@ -16,7 +16,7 @@ import rioxarray  # requires rasterio + GDAL
 import geopandas as gpd
 from shapely.geometry import Polygon, MultiPolygon
 
-from utils import CACHE_DIR, make_cache_dir
+from utils import CACHE_DIR, make_cache_dir, add_cell_polygons_coord
 from rio_utils import validate_tif_download
 import shutil
 
@@ -191,6 +191,7 @@ class ESIClient:
         # rioxarray expects a GeoDataFrame/GeoSeries geometry with CRS.
         gdf = gpd.GeoDataFrame({"geometry": [polygon]}, crs="EPSG:4326")
 
+        da = add_cell_polygons_coord(da, resolution_m=4000)
         # Reproject polygon into raster CRS if needed
         if da.rio.crs is not None and str(da.rio.crs).upper() != "EPSG:4326":
             gdf = gdf.to_crs(da.rio.crs)
