@@ -59,7 +59,7 @@ class FirmsClient:
         end: Union[str, date, pd.Timestamp],
         variables: List[str],
         *,
-        source: Sequence[FirmsSources] = "VIIRS_SNPP_NRT", # ["VIIRS_NOAA21_SP"],
+        source: Sequence[FirmsSources] = "VIIRS_NOAA20_SP", # ["VIIRS_NOAA21_SP"],
         crs: str = "EPSG:4326",
         return_by_source: bool = False,
     ) -> Union[xr.Dataset, Dict[str, xr.Dataset]]:

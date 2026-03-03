@@ -14,12 +14,13 @@ import xarray as xr
 import geopandas as gpd
 from shapely.geometry import Polygon, MultiPolygon
 from shapely.prepared import prep
+import shutil
 from rio_utils import validate_tif_download, download_file_safe, open_geotiff_safe, open_netcdf_safe, open_netcdf_safe_cached
 
 # Optional but recommended for HDF-EOS -> xarray
 import rioxarray  # noqa: F401  (pip install rioxarray rasterio; conda-forge often easiest)
 import rasterio
-from utils import CLIENTS_DIR, add_lonlat_coords, CACHE_DIR
+from utils import CLIENTS_DIR, add_lonlat_coords, make_cache_dir
 import os
 
 
@@ -39,7 +40,6 @@ class MODISClient:
     collection: str = "61"
     cache_files: bool = False
     cached_files = []
-    cache_dir: Union[str, Path] = os.path.join(CACHE_DIR, "laads_cache")
     key_file: Union[str, Path] = os.path.join(CLIENTS_DIR, "modis.key")
     timeout_s: int = 120
 
@@ -48,9 +48,12 @@ class MODISClient:
     # MODIS Sinusoidal sphere radius used in MODLAND grid (common constant)
     R: float = 6371007.181
 
+    def __init__(self):
+        self.save_dir = make_cache_dir(Path(f"{os.environ.get('SCRATCH')}/data/cache/modis"))
+        
     def __post_init__(self):
-        self.cache_dir = Path(self.cache_dir)
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self.save_dir = Path(self.save_dir)
+        self.save_dir.mkdir(parents=True, exist_ok=True)
         self._token = self._read_token(self.key_file)
         self._session = requests.Session()
         self._session.headers.update({"Authorization": f"Bearer {self._token}"})
@@ -261,7 +264,7 @@ class MODISClient:
             # match tile in filename
             matches = [n for n in names if f".{tile}." in n]
             for name in matches:
-                local = self.cache_dir / self.product / str(year) / f"{doy:03d}" / name.split(os.sep)[-1]
+                local = self.save_dir / name.split(os.sep)[-1]
                 local.parent.mkdir(parents=True, exist_ok=True)
                 if not local.exists() or local.stat().st_size == 0:
                     self._download_file(year, doy, name, local)
@@ -276,6 +279,7 @@ class MODISClient:
         if not self.cache_files:
             print('cleaning up MODIS cache')
             [os.remove(fname) for fname in self.cached_files if os.path.exists(fname)]
+            shutil.rmtree(self.save_dir)
 
     @staticmethod
     def _read_token(key_file: Union[str, Path]) -> str:

@@ -9,13 +9,27 @@ from joblib import dump, Parallel, delayed
 from pathlib import Path
 from shapely.geometry import Polygon, Point
 import subprocess
-import sklearn
 import time
 import re
 import matplotlib.pyplot as plt
 import xarray as xr
 import rasterio
 import pyproj
+from datetime import datetime, timezone
+import uuid
+
+def make_run_id() -> str:
+    # Example: run_20260226T235901Z_5f2c9c3a0b8c4d8aa2a1a0f5b7b20d3e
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    u = uuid.uuid4().hex
+    return f"{ts}_{u}"
+
+def make_cache_dir(base: Path) -> Path:
+    run_id = make_run_id()
+    pid = os.getpid()
+    d = base / f"{run_id}_pid{pid}"
+    d.mkdir(parents=True, exist_ok=False)
+    return d
 
 def set_env_var(var_name, key_file):
     """
@@ -94,7 +108,7 @@ def save_plot(
 
 
 def save_model(
-    model: sklearn.ensemble,
+    model,
     name: str,
     fmt: str = "joblib",
     add_timestamp: bool = True,

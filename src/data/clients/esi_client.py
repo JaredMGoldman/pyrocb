@@ -16,8 +16,9 @@ import rioxarray  # requires rasterio + GDAL
 import geopandas as gpd
 from shapely.geometry import Polygon, MultiPolygon
 
-from utils import CACHE_DIR
+from utils import CACHE_DIR, make_cache_dir
 from rio_utils import validate_tif_download
+import shutil
 
 Geom = Union[Polygon, MultiPolygon]
 
@@ -34,16 +35,18 @@ class ESIClient:
       {VAR}_4WK_YYYYDDD.tif
       Example: DFPPM_4WK_2017008.tif
     """
-    base_url: str = "https://gis1.servirglobal.net"
+    base_url: str = "http://gis1.servirglobal.net"
     remote_data_dir: str = "data/esi/4WK"
     cache_files = False
-    cache_dir: Union[str, Path] = os.path.join(CACHE_DIR, "esi_cache")
     cached_files = []
     timeout_s: int = 120
 
+    def __init__(self):
+        self.save_dir = make_cache_dir(Path(f"{os.environ.get('SCRATCH')}/data/cache/esi"))
+
     def __post_init__(self):
-        self.cache_dir = Path(self.cache_dir)
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self.save_dir = Path(self.save_dir)
+        self.save_dir.mkdir(parents=True, exist_ok=True)
         self._session = requests.Session()
 
     # ----------------------------
@@ -128,6 +131,7 @@ class ESIClient:
         if not self.cache_files:
             print('cleaning up ESI cache')
             [os.remove(fname) for fname in self.cached_files if os.path.exists(fname)]
+            shutil.rmtree(self.save_dir)
 
     # ----------------------------
     # Internals
@@ -163,7 +167,7 @@ class ESIClient:
         year = d.year
         doy = self._doy_str(d)
         fname = f"ESI_4WK_{year}{doy}.tif"
-        p = self.cache_dir / str(year) / fname
+        p = self.save_dir / fname
         p.parent.mkdir(parents=True, exist_ok=True)
         return p
 

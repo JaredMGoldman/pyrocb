@@ -30,24 +30,10 @@ import os
 from shapely.geometry import Polygon, MultiPolygon, Point
 from shapely.prepared import prep
 
-from herbie import Herbie, FastHerbie
-import uuid
+from herbie import Herbie
 import shutil
-from datetime import datetime, timezone
-import socket
 
-def make_run_id() -> str:
-    # Example: run_20260226T235901Z_5f2c9c3a0b8c4d8aa2a1a0f5b7b20d3e
-    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    u = uuid.uuid4().hex
-    return f"{ts}_{u}"
-
-def make_cache_dir(base: Path, prefix: str = "cache") -> Path:
-    run_id = make_run_id()
-    pid = os.getpid()
-    d = base / f"{run_id}_pid{pid}"
-    d.mkdir(parents=True, exist_ok=False)
-    return d
+from utils import make_cache_dir
 
 Geom = Union[Polygon, MultiPolygon]
 Freq = Literal["1H", "1h", "60min"]
@@ -76,7 +62,7 @@ class HRRRClient:
     conus_bbox: Tuple[float, float, float, float] = (-125.0, 24.0, -66.0, 50.0)
 
     def __init__(self, *args, **kwargs):
-        self.save_dir = make_cache_dir(Path(f"{os.environ.get('HOME')}/data/herbie"), prefix="")
+        self.save_dir = make_cache_dir(Path(f"{os.environ.get('SCRATCH')}/data/herbie"))
         # self.save_dir = f"{os.environ.get('HOME')}/data/herbie/.{uuid.uuid4().hex}"
 
     def _polygon_in_conus(self, polygon: Geom) -> bool:

@@ -239,7 +239,7 @@ hrrr_headers = [f'hrrr_{feat}' for feat in ['dpt', 'u', 'v', 't', 'rh', 'tp', 'm
 
 client_query_specs = [
     {"name": "esi", "client_ctor": clients.ESIClient, "client_kwargs": {}, "vars": ["DFPPM"]},
-    {"name": "firms", "client_ctor": clients.FirmsClient, "client_kwargs": {}, "vars": ["frp"]},
+    # {"name": "firms", "client_ctor": clients.FirmsClient, "client_kwargs": {}, "vars": ["frp"]},
     {"name": "us_hrrr", "client_ctor": clients.HRRRClient, "client_kwargs": {}, "vars": [
         ":TMP:2 m",
         ":DPT:2 m",
@@ -258,7 +258,7 @@ client_query_specs = [
         ":2d:",
     ]},
     {"name": "modis", "client_ctor": clients.MODISClient, "client_kwargs": {}, "vars": ["MaxFRP"]},
-    {"name": "rave", "client_ctor": clients.RAVEClient, "client_kwargs": {}, "vars": ["FRP_MEAN", "FRP_SD", "FRE", "PM25"]},
+    {"name": "rave", "client_ctor": clients.RAVEClient, "client_kwargs": {}, "vars": ["FRP_MEAN", "FRP_SD"]},
 ]
 
 def main(cp: pd.DataFrame, 

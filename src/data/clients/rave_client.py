@@ -13,15 +13,16 @@ import xarray as xr
 
 from shapely.geometry import Polygon, MultiPolygon, Point
 from shapely import points, contains
+import shutil
 
-from utils import CACHE_DIR
+from utils import make_cache_dir
 from rio_utils import download_file_safe, open_netcdf_safe_cached
 
 Geom = Union[Polygon, MultiPolygon]
 
 cached_file_lb = pd.Timestamp("07-01-2019")
 cached_file_ub = pd.Timestamp("12-31-2023")
-cached_file_base = "/home/jaredgoldman/data/RAVE"
+cached_file_base = "/u/scratch/j/jgoldman/data/RAVE"
 
 @dataclass
 class RAVEClient:
@@ -32,9 +33,8 @@ class RAVEClient:
       - subsets variables and clips to polygon
       - returns xr.Dataset concatenated over time
     """
-    base_url: str = "https://www.ospo.noaa.gov/pub/Blended/RAVE/RAVE-HrlyEmiss-3km"
+    base_url: str = "http://www.ospo.noaa.gov/pub/Blended/RAVE/RAVE-HrlyEmiss-3km"
     cache_files: bool = False
-    cache_dir: Union[str, Path] = os.path.join(CACHE_DIR, "rave_cache")
     cached_files = []
     sampling_freq: str = "4h"
     timeout_s: int = 120
@@ -48,9 +48,12 @@ class RAVEClient:
         r"s(\d{4})(\d{2})(\d{2})", re.VERBOSE
     )
 
+    def __init__(self):
+        self.save_dir = make_cache_dir(Path(f"{os.environ.get('SCRATCH')}/data/cache/rave"))
+
     def __post_init__(self):
-        self.cache_dir = Path(self.cache_dir)
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self.save_dir = Path(self.save_dir)
+        self.save_dir.mkdir(parents=True, exist_ok=True)
         self._session = requests.Session()
 
     # ----------------------------
@@ -132,7 +135,7 @@ class RAVEClient:
                 local = self._download(url = meta['url'], year=meta["year"], month=meta["month"])
                 ds = open_netcdf_safe_cached(meta['url'], local, self._session)
                 self.cached_files.append(local)
-
+                
             # variable subset
             if variables is not None:
                 missing = [v for v in variables if v not in ds.data_vars]
@@ -218,7 +221,7 @@ class RAVEClient:
     # ----------------------------
     def _download(self, url: str, year: int, month: int, chunk_size: int = 1 << 20) -> Path:
         fname = url.split("/")[-1]
-        out = self.cache_dir / f"{year:04d}" / f"{month:02d}" / fname
+        out = self.save_dir / fname
         out.parent.mkdir(parents=True, exist_ok=True)
 
         if out.exists() and out.stat().st_size > 0:
@@ -230,6 +233,8 @@ class RAVEClient:
         if not self.cache_files:
             print('cleaning up RAVE cache')
             [os.remove(fname) for fname in self.cached_files if os.path.exists(fname)]
+
+            shutil.rmtree(self.save_dir)
 
     # ----------------------------
     # Dataset helpers
