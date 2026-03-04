@@ -306,3 +306,4 @@ CLIENTS_DIR = os.path.join(DATA_DIR,"clients")
 CACHE_DIR = os.path.join(CLIENTS_DIR,"cache")
 CACHE_BASE_DIR = Path(f"{os.environ.get('HOME')}/data/cache") # Path(f"{os.environ.get('SCRATCH')}/data/cache")
 FIRMS_KEY_FNAME = "firms.key"
+EARTHACCESS_KEY_NAME = "earthaccess.netrc"

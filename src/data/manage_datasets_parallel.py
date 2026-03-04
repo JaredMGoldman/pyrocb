@@ -32,7 +32,8 @@ parser.add_argument('-w', '--num_workers', type = int, dest = 'num_workers', def
                     help = "maximum number of workers to use")
 parser.add_argument('-f', '--flush_n_fires', type = int, dest = 'flush_n_fires', default = 50,
                     help = "frequency that fire features are written to output file")
-
+parser.add_argument('--third', type = int, dest = 'third', default = 0,
+                    help = "which third of dataset to process. if value is 0, process the whole dataset.")
 # -----------------------------
 # Helpers
 # -----------------------------
@@ -266,17 +267,28 @@ def main(cp: pd.DataFrame,
          cp_poly: gpd.GeoDataFrame,
          flush_fires: int = 50,
          max_workers: int = 8,
-         DEBUG_MODE: bool = False):
+         DEBUG_MODE: bool = False,
+         THIRD: int = 0):
     # -----------------------------
     # Main driver
     # -----------------------------
     # IMPORTANT: don't pass instantiated clients into processes.
     # Pass constructors + kwargs so workers create their own.
     # Pre-split cp indices in the parent
-    cp_ids = list(cp.cp.unique()[::-1])
+    all_cps = list(cp.cp.unique())
+    all_fires = len(all_cps)
+    if THIRD == 1:
+        cp_ids = all_cps[:int(all_fires/2)+1]
+    elif THIRD == 2:
+        cp_ids = all_cps[int(all_fires/2):2*int(all_fires/3)+1]
+    elif THIRD == 3:
+        cp_ids = all_cps[2*int(all_fires/3):]
+    else:
+        cp_ids = all_cps
+
     all_fires = len(cp_ids)
+
     random_cps = sample(cp_ids, all_fires)
-    
     header = {"cp": [], "day": []}
     for val in client_query_specs:
         if 'hrrr' in val['name']:
@@ -387,4 +399,5 @@ if __name__ == "__main__":
          cp_poly      = gpd.read_file(os.path.join(DATA_DIR, args.p)),
          flush_fires  = args.flush_n_fires,
          max_workers  = args.num_workers,
-         DEBUG_MODE   = args.debug)
+         DEBUG_MODE   = args.debug,
+         THIRD         = args.third)

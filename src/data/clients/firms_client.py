@@ -11,6 +11,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 import geopandas as gpd
+import earthaccess as ea
 import requests
 from requests.adapters import HTTPAdapter
 from shapely.geometry import Polygon, MultiPolygon
@@ -264,7 +265,7 @@ if __name__ == "__main__":
 
     set_env_var("FIRMS_MAP_KEY", firms_key_path)
 
-    client = FirmsClient.from_env()
+    client = FirmsClient() #.from_env()
 
     poly = box(-119.05, 33.60, -117.50, 34.85)
 
@@ -272,8 +273,8 @@ if __name__ == "__main__":
         polygon=poly,
         start="2025-08-01",
         end="2025-08-20",
-        vars = ['frp'],
-        sources=["VIIRS_SNPP_SP", "VIIRS_NOAA20_SP"],
+        variables = ['frp'],
+        source="VIIRS_NOAA20_NRT",
     )
 
     print(ds)
