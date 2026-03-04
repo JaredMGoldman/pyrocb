@@ -100,7 +100,7 @@ class ESIClient:
         snapped_dates = self._snapped_dates(start_ts, end_ts)
 
         per_time_dsets = []
-        for d in snapped_dates:
+        for d, doys in snapped_dates.items():
             per_var = []
             for var in variables:
                 tif = self._download_tif(d)
@@ -115,8 +115,8 @@ class ESIClient:
                 da = da.squeeze(drop=True)
 
                 per_var.append(da.to_dataset(name=var))
-
-            ds_day = xr.merge(per_var).expand_dims(time=[np.datetime64(d.date())])
+                
+            ds_day = xr.merge(per_var).expand_dims(time=doys)
             per_time_dsets.append(ds_day)
 
         if not per_time_dsets:
@@ -137,13 +137,19 @@ class ESIClient:
     # ----------------------------
     def _snapped_dates(self, start_ts: pd.Timestamp, end_ts: pd.Timestamp) -> list[pd.Timestamp]:
         days = pd.date_range(start_ts, end_ts, freq="D")
-        snapped = {self._snap_to_1_plus_7k(d) for d in days}
-        return sorted(snapped)
+        snapped = {}
+        for d in days:
+            snapped_doy = self._snap_to_1_plus_7k(d)
+            if snapped_doy in snapped.keys():
+                snapped[snapped_doy].append(d)
+            else:
+                snapped[snapped_doy] = [d]
+        return snapped
 
     @staticmethod
     def _snap_to_1_plus_7k(d: pd.Timestamp) -> pd.Timestamp:
         doy = d.timetuple().tm_yday
-        snapped_doy = 1 + ((doy - 1) // 7 + 1) * 7
+        snapped_doy = 1 + ((doy - 1) // 7 ) * 7
         return pd.Timestamp(year=d.year, month=1, day=1) + pd.Timedelta(days=snapped_doy - 1)
 
     @staticmethod
@@ -183,7 +189,8 @@ class ESIClient:
         # rioxarray returns dims (band, y, x); we drop band.
         da = rioxarray.open_rasterio(tif_path, masked=True).squeeze("band", drop=True)
         da.name = var_name
-        return da
+        da_with_nan = da.where(da != - 9999)
+        return da_with_nan
 
     @staticmethod
     def _clip_dataarray_to_polygon(da: xr.DataArray, polygon: Geom, drop: bool = True) -> xr.DataArray:
@@ -211,8 +218,8 @@ if __name__ == "__main__":
     poly = box(-119.05, 33.60, -117.50, 34.85)  # LA bbox
     ds = client.query(
         polygon=poly,
-        start="2017-01-01",
-        end="2017-02-01",
+        start="2020-09-09",
+        end="2020-09-11",
         variables=["DFPPM"],   # add more prefixes if they exist in that directory
     )
 
