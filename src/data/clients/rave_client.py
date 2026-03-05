@@ -129,7 +129,11 @@ class RAVEClient:
         for meta in files:
             if is_cached:
                 local = meta["path"]
-                ds = open_netcdf_safe_cached(self.base_url, local, self._session)
+                local_fname = local.split(os.path.sep)[-1]
+                cached_fname = os.path.split(self.save_dir, local_fname)
+                shutil.copy(local, cached_fname)
+                self.cached_files.append(cached_fname)
+                ds = open_netcdf_safe_cached(self.base_url, cached_fname, self._session)
             else:
                 local = self._download(url = meta['url'], year=meta["year"], month=meta["month"])
                 ds = open_netcdf_safe_cached(meta['url'], local, self._session)
@@ -229,11 +233,10 @@ class RAVEClient:
         return download_file_safe(url, out, self._session)
 
     def _remove_cached_files(self):
-        if not self.cache_files:
-            print('cleaning up RAVE cache')
-            [os.remove(fname) for fname in self.cached_files if os.path.exists(fname)]
+        print('cleaning up RAVE cache')
+        [os.remove(fname) for fname in self.cached_files if os.path.exists(fname)]
 
-            shutil.rmtree(self.save_dir)
+        shutil.rmtree(self.save_dir)
 
     # ----------------------------
     # Dataset helpers

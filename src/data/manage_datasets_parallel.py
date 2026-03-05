@@ -275,7 +275,13 @@ def main(cp: pd.DataFrame,
     # IMPORTANT: don't pass instantiated clients into processes.
     # Pass constructors + kwargs so workers create their own.
     # Pre-split cp indices in the parent
-    all_cps = list(cp[cp['t_min'] != cp['t_max']].cp.unique())
+    written_header = False
+    all_cps = list(cp[cp['t_min'] + 1 < cp['t_max']].cp.unique())
+    if os.path.exists(feature_file):
+        processed_cps = pd.read_csv(feature_file).cp.unique()
+        all_cps = list(set(all_cps) - set(list(processed_cps)))
+        written_header = True
+        
     all_fires = len(all_cps)
     print(f"generating data for {all_fires} fires")
     if THIRD == 1:
@@ -298,8 +304,9 @@ def main(cp: pd.DataFrame,
             header[varname_map(val["name"], varname)] = []
     for k in hrrr_headers:
         header[k] = []
-    pd.DataFrame(header).to_csv(feature_file, index = False)
-    written_header = True
+    if not written_header:
+        pd.DataFrame(header).to_csv(feature_file, index = False)
+        written_header = True
 
     start_time = datetime.now()
 
