@@ -240,7 +240,7 @@ hrrr_headers = [f'hrrr_{feat}' for feat in ['dpt', 'u', 'v', 't', 'rh', 'tp', 'm
 
 client_query_specs = [
     {"name": "esi", "client_ctor": clients.ESIClient, "client_kwargs": {}, "vars": ["DFPPM"]},
-    {"name": "firms", "client_ctor": clients.FirmsClient, "client_kwargs": {}, "vars": ["frp"]},
+    # {"name": "firms", "client_ctor": clients.FirmsClient, "client_kwargs": {}, "vars": ["frp"]},
     {"name": "us_hrrr", "client_ctor": clients.HRRRClient, "client_kwargs": {}, "vars": [
         ":TMP:2 m",
         ":DPT:2 m",
@@ -275,8 +275,9 @@ def main(cp: pd.DataFrame,
     # IMPORTANT: don't pass instantiated clients into processes.
     # Pass constructors + kwargs so workers create their own.
     # Pre-split cp indices in the parent
-    all_cps = list(cp.cp.unique())
+    all_cps = list(cp[cp['t_min'] != cp['t_max']].cp.unique())
     all_fires = len(all_cps)
+    print(f"generating data for {all_fires} fires")
     if THIRD == 1:
         cp_ids = all_cps[:int(all_fires/2)+1]
     elif THIRD == 2:
