@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple, Union, Iterable
+from typing import Dict, List, Optional, Sequence, Tuple, Union
 import re
 
 import numpy as np
@@ -15,8 +15,9 @@ from shapely.geometry import Polygon, MultiPolygon, Point
 from shapely import points, contains
 import shutil
 
-from utils import make_cache_dir, buffer_polygon_meters, CACHE_BASE_DIR
-from rio_utils import download_file_safe, open_netcdf_safe_cached
+from utils import buffer_polygon_meters, CACHE_BASE_DIR
+from rio_utils import open_netcdf_safe_cached
+from data.clients.base_client import BaseClient
 
 Geom = Union[Polygon, MultiPolygon]
 
@@ -25,7 +26,7 @@ cached_file_ub = pd.Timestamp("12-31-2023")
 cached_file_base = "/home/jaredgoldman/data/RAVE" # "/u/scratch/j/jgoldman/data/RAVE"
 
 @dataclass
-class RAVEClient:
+class RAVEClient(BaseClient):
     """
     RAVE hourly emissions (3km) client:
       - lists month directories for a date range
@@ -34,9 +35,7 @@ class RAVEClient:
       - returns xr.Dataset concatenated over time
     """
     base_url: str = "http://www.ospo.noaa.gov/pub/Blended/RAVE/RAVE-HrlyEmiss-3km"
-    cache_files: bool = False
-    cached_files = []
-    sampling_freq: str = "4h"
+    sampling_freq: str = "4H"
     timeout_s: int = 120
 
     # common coordinate name fallbacks
@@ -48,11 +47,8 @@ class RAVEClient:
         r"s(\d{4})(\d{2})(\d{2})", re.VERBOSE
     )
 
-    def __init__(self):
-        self.save_dir = make_cache_dir(Path(f"{CACHE_BASE_DIR}/rave"))
-        self.save_dir = Path(self.save_dir)
-        self.save_dir.mkdir(parents=True, exist_ok=True)
-        self._session = requests.Session()
+    def __init__(self, *args, **kwargs):
+        super().__init__(cache_dir = os.path.join(CACHE_BASE_DIR,'rave'), **kwargs)
 
     # ----------------------------
     # Public API
@@ -68,6 +64,7 @@ class RAVEClient:
         keep_attrs: bool = True,
         ) -> xr.Dataset:
         try:
+            self.logger.debug(f"Starting query {start}-{end}")
             return self._query(
                 polygon,
                 start,
@@ -130,12 +127,12 @@ class RAVEClient:
             if is_cached:
                 local = meta["path"]
                 local_fname = local.split(os.path.sep)[-1]
-                cached_fname = os.path.split(self.save_dir, local_fname)
+                cached_fname = os.path.join(self.save_dir, local_fname)
                 shutil.copy(local, cached_fname)
                 self.cached_files.append(cached_fname)
                 ds = open_netcdf_safe_cached(self.base_url, cached_fname, self._session)
             else:
-                local = self._download(url = meta['url'], year=meta["year"], month=meta["month"])
+                local = self._download(url = meta['url'])
                 ds = open_netcdf_safe_cached(meta['url'], local, self._session)
                 self.cached_files.append(local)
                 
@@ -218,25 +215,6 @@ class RAVEClient:
                     continue
                 
         return fnames
-
-    # ----------------------------
-    # Download + cache
-    # ----------------------------
-    def _download(self, url: str, year: int, month: int, chunk_size: int = 1 << 20) -> Path:
-        fname = url.split("/")[-1]
-        out = self.save_dir / fname
-        out.parent.mkdir(parents=True, exist_ok=True)
-
-        if out.exists() and out.stat().st_size > 0:
-            return out
-
-        return download_file_safe(url, out, self._session)
-
-    def _remove_cached_files(self):
-        print('cleaning up RAVE cache')
-        [os.remove(fname) for fname in self.cached_files if os.path.exists(fname)]
-
-        shutil.rmtree(self.save_dir)
 
     # ----------------------------
     # Dataset helpers

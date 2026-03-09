@@ -17,6 +17,7 @@ import geopandas as gpd
 from shapely.geometry import Polygon, MultiPolygon
 
 from utils import CACHE_BASE_DIR, make_cache_dir, buffer_polygon_meters
+from data.clients.base_client import BaseClient
 from rio_utils import validate_tif_download
 import shutil
 
@@ -24,7 +25,7 @@ Geom = Union[Polygon, MultiPolygon]
 
 
 @dataclass
-class ESIClient:
+class ESIClient(BaseClient):
     """
     Query SERVIR ESI 4-week GeoTIFFs by polygon + date range and return an xarray.Dataset.
 
@@ -37,15 +38,11 @@ class ESIClient:
     """
     base_url: str = "http://gis1.servirglobal.net"
     remote_data_dir: str = "data/esi/4WK"
-    cache_files = False
     cached_files = []
     timeout_s: int = 120
 
-    def __init__(self):
-        self.save_dir = make_cache_dir(Path(f"{CACHE_BASE_DIR}/esi"))
-        self.save_dir = Path(self.save_dir)
-        self.save_dir.mkdir(parents=True, exist_ok=True)
-        self._session = requests.Session()
+    def __init__(self, *args, **kwargs):
+        super().__init__(cache_dir = os.path.join(CACHE_BASE_DIR, 'esi'), **kwargs)
 
     # ----------------------------
     # Public API
@@ -64,6 +61,7 @@ class ESIClient:
                 clip = clip, drop = drop)
         except Exception as e:
             self._remove_cached_files()
+            self.logger.error(f"[ERROR] ESI failed: {e}")
             raise RuntimeError(f"[ERROR] ESI failed: {e}")
 
     def _query(
@@ -94,6 +92,7 @@ class ESIClient:
         start_ts = pd.Timestamp(start).normalize()
         end_ts = pd.Timestamp(end).normalize()
         if end_ts < start_ts:
+            self.logger.error("end must be >= start")
             raise ValueError("end must be >= start")
 
         # Snap each day to the 1+7k DOY bins, then unique them
@@ -120,17 +119,12 @@ class ESIClient:
             per_time_dsets.append(ds_day)
 
         if not per_time_dsets:
+            self.logger.error("No datasets were loaded for the requested time range.")
             raise FileNotFoundError("No datasets were loaded for the requested time range.")
 
         ds = xr.merge(per_time_dsets).load()
         self._remove_cached_files()
         return ds
-
-    def _remove_cached_files(self):
-        if not self.cache_files:
-            print('cleaning up ESI cache')
-            [os.remove(fname) for fname in self.cached_files if os.path.exists(fname)]
-            shutil.rmtree(self.save_dir)
 
     # ----------------------------
     # Internals

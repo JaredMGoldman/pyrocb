@@ -1,39 +1,19 @@
-# download subset of HRRR data based on 
-#   - https://www.nco.ncep.noaa.gov/pmb/products/hrrr/hrrr.t00z.wrfsfcf00.grib2.shtml
-#   - fire location
-#   - variables of interest
-#       - hdw:              'vpd_2m', 'wind_speed'
-#       - hwp: HWP=0.213*G^(1.5)*vpd^(0.73)(1-M)^(5.10)S
-#           - https://doi.org/10.1175/WAF-D-24-0068.1
-#           - G: max(3, 10-m wind gust potential)
-#           - VPD: 2-m vapor pressure deficit
-#               - calculate from relative humidity (RH) and temperature (TMP)
-#               - SVP = 610.7*10^{7.5*TMP/(237.3+T)}/1000
-#               - AVP = SVP * RH/100
-#               - VPD = SVP(1 - RH/100) 
-#           - M: soil moisture availability (MSTAV)
-#           - S: snow water equivalent term (WEASD)
-#       - hrrr_met: VPD, WIND
-
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, Sequence, List, Union, Literal, Tuple
+from typing import Sequence, Union, Literal, Tuple
 
-from pathlib import Path
-import logging
 import numpy as np
+import os
 import pandas as pd
 import xarray as xr
-import os
 
 from shapely.geometry import Polygon, MultiPolygon, Point
-from shapely.prepared import prep
 
 from herbie import Herbie
-import shutil
 
-from utils import make_cache_dir, buffer_polygon_meters, CACHE_BASE_DIR
+from utils import buffer_polygon_meters, CACHE_BASE_DIR
+from data.clients.base_client import BaseClient
 
 Geom = Union[Polygon, MultiPolygon]
 Freq = Literal["1H", "1h", "60min"]
@@ -43,26 +23,26 @@ RegionMode = Literal["auto", "force_hrrr", "force_ifs"]
 drop_coords = ["heightAboveGround", "depthBelowLand", "valid_time"]
 
 @dataclass
-class HRRRClient:
+class HRRRClient(BaseClient):
     index_fps = []
     product: str = "sfc"
     fxx: int = 0
     model: str = "hrrr"
-    freq: Freq = "6h"
+    freq: Freq = "6H"
     remove_grib: bool = True
     n_jobs: int = 4
 
-    # NEW: IFS fallback config
+    # IFS fallback config
     region_mode: RegionMode = "auto"
     ifs_model: str = "ifs"
     ifs_product: str = "oper"
     ifs_init_freq: str = "12H"  # IFS oper runs at 00z & 12z
 
-    # NEW: CONUS bbox heuristic (lon/lat)
+    # CONUS bbox heuristic (lon/lat)
     conus_bbox: Tuple[float, float, float, float] = (-125.0, 24.0, -66.0, 50.0)
 
     def __init__(self, *args, **kwargs):
-        self.save_dir = make_cache_dir(Path(f"{CACHE_BASE_DIR}/herbie"))
+        super().__init__(cache_dir=os.path.join(CACHE_BASE_DIR, 'herbie'), **kwargs)
 
     def _polygon_in_conus(self, polygon: Geom) -> bool:
         minx, miny, maxx, maxy = polygon.bounds
@@ -113,10 +93,11 @@ class HRRRClient:
                                 variables = variables,
                                 bbox_first = bbox_first,
                                 time_dim = time_dim).load()
-            self._remove_idx_files()
+            self._remove_cached_files()
             return out
         except Exception as e:
-            self._remove_idx_files()
+            self._remove_cached_files()
+            self.logger.error(f"HRRR failed with expection {e}")
             raise RuntimeError(f"[ERROR] HRRR failed with expection {e}")
 
     def _query(
@@ -147,6 +128,7 @@ class HRRRClient:
         start_ts = pd.Timestamp(start)
         end_ts = pd.Timestamp(end)
         if end_ts < start_ts:
+            self.logger.error("end must be >= start")
             raise ValueError("end must be >= start")
 
         # HRRR is hourly; build list of initialization times (commonly UTC)
@@ -154,6 +136,7 @@ class HRRRClient:
         polygon =  buffer_polygon_meters(polygon, resolution_m=resolution, factor = 1.0)
 
         if len(times) == 0:
+            self.logger.error("Empty time range after applying model-specific frequency.")
             raise ValueError("Empty time range after applying model-specific frequency.")
 
         search = self._build_search_string(variables)
@@ -166,7 +149,7 @@ class HRRRClient:
                 fxx=self.fxx,
                 save_dir = self.save_dir,
             )
-            print(f"search vars: {search}")
+            self.logger.debug(f"search vars: {search}")
 
             dses.append(self.combine_dses(H.xarray(search, remove_grib=self.remove_grib), polygon, time_dim))
             self.index_fps.append(H.get_localIndexFilePath())
@@ -294,16 +277,6 @@ class HRRRClient:
             return ds.where(mask_da, drop=True)
 
         raise ValueError(f"Unsupported lat/lon shapes: lat.ndim={lat.ndim}, lon.ndim={lon.ndim}")
-
-    def _remove_idx_files(self):
-        print(f"[INFO] removing {len(self.index_fps)} HRRR indices...")
-        # dirnames = list(set([os.path.dirname(fname) for fname in self.index_fps]))
-        # for fname in self.index_fps:
-        #     os.remove(fname)
-        # for dirname in dirnames:
-        #     os.rmdir(dirname)
-        shutil.rmtree(self.save_dir)
-        print("[INFO] HRRR indices removed")
 
 if __name__ == "__main__":
     from shapely.geometry import box

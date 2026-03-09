@@ -1,10 +1,10 @@
-from data.clients.firms_client import FirmsClient
-from data.clients.esi_client import ESIClient
-from data.clients.gridmet_client import GridMETClient
-from data.clients.hrrr_client import HRRRClient
-from data.clients.landfire_client import LANDFIREClient
-from data.clients.modis_client import MODISClient
-from data.clients.ncar_client import NCARFMCClient
-from data.clients.pws_client import *
-from data.clients.rave_client import RAVEClient
-from data.clients.smops_client import SMOPSClient
+# from data.clients.firms_client import FirmsClient
+# from data.clients.esi_client import ESIClient
+# from data.clients.gridmet_client import GridMETClient
+# from data.clients.hrrr_client import HRRRClient
+# from data.clients.landfire_client import LANDFIREClient
+# from data.clients.modis_client import MODISClient
+# from data.clients.ncar_client import NCARFMCClient
+# from data.clients.pws_client import *
+# from data.clients.rave_client import RAVEClient
+# from data.clients.smops_client import SMOPSClient

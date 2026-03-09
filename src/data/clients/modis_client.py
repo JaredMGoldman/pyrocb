@@ -4,22 +4,20 @@ import re
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
-from typing import Iterable, Optional, Sequence, Tuple, Union, List
+from typing import Optional, Sequence, Union, List
 
 import numpy as np
 import pandas as pd
 from rasterio.features import geometry_mask
-import requests
 import xarray as xr
-import geopandas as gpd
 from shapely.geometry import Polygon, MultiPolygon
-import shutil
-from rio_utils import download_file_safe, open_geotiff_safe
+from rio_utils import open_geotiff_safe
 
 # Optional but recommended for HDF-EOS -> xarray
 import rasterio
-from utils import add_lonlat_coords, make_cache_dir, buffer_polygon_meters, \
+from utils import add_lonlat_coords, buffer_polygon_meters, \
                     CLIENTS_DIR, CACHE_BASE_DIR
+from clients.base_client import BaseClient
 import os
 
 
@@ -27,7 +25,7 @@ Geom = Union[Polygon, MultiPolygon]
 
 
 @dataclass
-class MODISClient:
+class MODISClient(BaseClient):
     """
     Download MODIS tiled products from LAADS 'archive/allData' for a polygon+date range,
     based on MODIS sinusoidal tile IDs (hXXvYY), and return an xarray.Dataset clipped to polygon.
@@ -37,8 +35,6 @@ class MODISClient:
     """
     product: str = "MYD14A1"
     collection: str = "61"
-    cache_files: bool = False
-    cached_files = []
     key_file: Union[str, Path] = os.path.join(CLIENTS_DIR, "modis.key")
     timeout_s: int = 120
 
@@ -47,12 +43,9 @@ class MODISClient:
     # MODIS Sinusoidal sphere radius used in MODLAND grid (common constant)
     R: float = 6371007.181
 
-    def __init__(self):
-        self.save_dir = make_cache_dir(Path(f"{CACHE_BASE_DIR}/modis"))
-        self.save_dir = Path(self.save_dir)
-        self.save_dir.mkdir(parents=True, exist_ok=True)
+    def __init__(self, **kwargs):
+        super().__init__(cache_dir= os.path.join(CACHE_BASE_DIR, 'modis'), **kwargs)
         self._token = self._read_token(self.key_file)
-        self._session = requests.Session()
         self._session.headers.update({"Authorization": f"Bearer {self._token}"})
         
     # -------------------------
@@ -269,19 +262,9 @@ class MODISClient:
                 local = self.save_dir / name.split(os.sep)[-1]
                 local.parent.mkdir(parents=True, exist_ok=True)
                 if not local.exists() or local.stat().st_size == 0:
-                    self._download_file(name, local)
+                    self._download(name)
                 out.append(str(local))
         return out
-
-    def _download_file(self, filename: str, out_path: Path) -> None:
-        url = filename
-        download_file_safe(url, out_path, self._session)
-
-    def _remove_cached_files(self):
-        if not self.cache_files:
-            print('cleaning up MODIS cache')
-            [os.remove(fname) for fname in self.cached_files if os.path.exists(fname)]
-            shutil.rmtree(self.save_dir)
 
     @staticmethod
     def _read_token(key_file: Union[str, Path]) -> str:
@@ -362,7 +345,6 @@ class MODISClient:
                 all_touched=True,
             )
             return ds.where(mask)
-            # return ds.rio.clip(gdf.geometry, gdf.crs, drop=True)
         except Exception:
             # fallback: do nothing (or you can implement a manual mask if you add lon/lat coords)
             return ds
