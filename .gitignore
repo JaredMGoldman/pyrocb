@@ -1,5 +1,6 @@
 outputs/*/*.png
 outputs/*/*.csv
+outputs/*/*.log
 outputs/*.csv
 data/cp.5
 data/cp_poly.gpkg

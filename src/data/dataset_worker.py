@@ -90,17 +90,19 @@ def compute_daily_features_for_fire(
 
         cp_token = set_cp(cp_idx)
         client_token = set_client(client_name)
-        try:
-            if DEBUG_MODE:
+
+        if DEBUG_MODE:
+            try:
                 result = run_one_client(task_payload)
                 return result
-        finally:
-            reset_tokens(cp_token, client_token)
-            try:
-                crash_file.flush()
-                crash_file.close()
-            except Exception:
-                pass
+            finally:
+                reset_tokens(cp_token, client_token)
+                try:
+                    crash_file.flush()
+                    crash_file.close()
+                    os.remove(crash_dir / f"worker_{os.getpid()}.log")
+                except Exception:
+                    pass
 
         try:
             logger.info("worker started")
@@ -124,6 +126,7 @@ def compute_daily_features_for_fire(
             try:
                 crash_file.flush()
                 crash_file.close()
+                os.remove(crash_dir / f"worker_{os.getpid()}.log")
             except Exception:
                 pass
         
