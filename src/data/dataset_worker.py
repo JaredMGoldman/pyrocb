@@ -9,8 +9,8 @@ from typing import Dict, Any, List
 import traceback
 
 from data.parallel_utils import skip_fire, is_conus, safe_buffer, time_bins, varname_map
-from logging_utils import log_cp, set_cp, log_client, set_client, configure_queue_logging, init_worker_logging, reset_tokens
-from utils import LOG_DIR
+from utils.logging_utils import log_cp, set_cp, log_client, set_client, configure_queue_logging, init_worker_logging, reset_tokens
+from utils.utils import LOG_DIR
 
 def compute_daily_features_for_fire(
     cp_idx,

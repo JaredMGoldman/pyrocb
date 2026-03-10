@@ -7,7 +7,7 @@ from scipy.stats import linregress
 from helper_functions import summarize_error
 import numpy as np
 import pandas as pd
-from utils import *
+from utils.utils import *
 
 def plot_category_heatmap(data_plot, obs_label, mod_label, model_axis_label):
     conf_mat = confusion_matrix(data_plot[obs_label], data_plot[mod_label], labels=['decrease', 'no_change', 'increase'])

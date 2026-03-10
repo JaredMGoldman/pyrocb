@@ -16,9 +16,9 @@ import rioxarray  # requires rasterio + GDAL
 import geopandas as gpd
 from shapely.geometry import Polygon, MultiPolygon
 
-from utils import CACHE_BASE_DIR, make_cache_dir, buffer_polygon_meters
+from utils.utils import CACHE_BASE_DIR, make_cache_dir, buffer_polygon_meters
 from data.clients.base_client import BaseClient
-from rio_utils import validate_tif_download
+from utils.rio_utils import validate_tif_download
 import shutil
 
 Geom = Union[Polygon, MultiPolygon]

@@ -3,7 +3,7 @@ import geopandas as gpd
 import pandas as pd
 import os
 import matplotlib.pyplot as plt
-from utils import save_plot, slugify
+from utils.utils import save_plot, slugify
 
 MTBS_DIR = '/data/lthapa/data2restore/lthapa/mtbs/2020/'
 ALL_FIRES_FN = '/data/lthapa/data2restore/lthapa/ML_daily/unique_fires_with_area_and_irwin_192021.csv'

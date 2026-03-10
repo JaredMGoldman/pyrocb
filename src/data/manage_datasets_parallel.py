@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from logging_utils import start_log_listener, init_worker_logging
+from utils.logging_utils import start_log_listener, init_worker_logging
 from data.parallel_utils import varname_map
 from data.specs import client_query_specs, hrrr_headers
 from data.dataset_worker import compute_daily_features_for_fire
-from utils import FEATURE_OUTPUT_DIR, DATA_DIR, LOG_DIR
+from utils.utils import FEATURE_OUTPUT_DIR, DATA_DIR, LOG_DIR
 
 import argparse
 from concurrent.futures import ProcessPoolExecutor, as_completed

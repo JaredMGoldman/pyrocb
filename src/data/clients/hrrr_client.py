@@ -12,7 +12,7 @@ from shapely.geometry import Polygon, MultiPolygon, Point
 
 from herbie import Herbie
 
-from utils import buffer_polygon_meters, CACHE_BASE_DIR
+from utils.utils import buffer_polygon_meters, CACHE_BASE_DIR
 from data.clients.base_client import BaseClient
 
 Geom = Union[Polygon, MultiPolygon]

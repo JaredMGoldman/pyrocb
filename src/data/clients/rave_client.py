@@ -15,8 +15,8 @@ from shapely.geometry import Polygon, MultiPolygon, Point
 from shapely import points, contains
 import shutil
 
-from utils import buffer_polygon_meters, CACHE_BASE_DIR
-from rio_utils import open_netcdf_safe_cached
+from utils.utils import buffer_polygon_meters, CACHE_BASE_DIR
+from utils.rio_utils import open_netcdf_safe_cached
 from data.clients.base_client import BaseClient
 
 Geom = Union[Polygon, MultiPolygon]
