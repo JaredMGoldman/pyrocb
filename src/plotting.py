@@ -4,7 +4,6 @@ import matplotlib.pyplot as plt
 from sklearn.metrics import confusion_matrix, classification_report
 import seaborn as sns
 from scipy.stats import linregress
-from helper_functions import summarize_error
 import numpy as np
 import pandas as pd
 from utils.utils import *
@@ -78,7 +77,7 @@ def plot_2dhist_withfit(df_plot, x_data, y_data, log_x_data,log_y_data, inc_cuto
     plt.title(title)
     plt.show()
     
-def plot_importances(forest, varnames, plot_title):
+def plot_importances(forest, varnames, plot_title, plot_name):
     tree_indices = np.arange(0, len(forest.feature_importances_)) + 0.5
     importances = forest.feature_importances_ #importances for all trees, so if you have 100 trees and 5 features this is a 100x5 (or 5x100) matrix
     std = np.std([tree.feature_importances_ for tree in forest.estimators_], axis=0)
@@ -93,7 +92,7 @@ def plot_importances(forest, varnames, plot_title):
     ax1.set_ylim((-0.5, len(df_plot['importances']))) #the height of the figure depends on the # of variables plotted
     fig.tight_layout()
     plt.title(plot_title) #title!
-    save_path = save_model(f"importances_{plot_title}.png")
+    save_path = plt.savefig(os.path.join(PLOTS_DIR, "importances.png"))
     print("Saved:", save_path)
 
 def frp_hist2d_v2(df_plot, x_data, y_data,log_x_data,log_y_data, cmap_name, v_min, v_max, x_axis_label, vars_in_model):

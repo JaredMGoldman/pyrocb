@@ -5,7 +5,7 @@ import pandas as pd
 import os
 import geopandas as gpd
 from os.path import exists
-from joblib import dump, Parallel, delayed
+from joblib import dump, load, Parallel, delayed
 from pathlib import Path
 from shapely.geometry import Polygon, Point, box
 import subprocess
@@ -86,7 +86,7 @@ def save_plot(
     name: str,
     dpi: int = 200,
     fmt: str = "png",
-    add_timestamp: bool = True,
+    ts_bool: bool = True,
     tight: bool = False,
 ) -> Path:
     """
@@ -96,7 +96,7 @@ def save_plot(
     plot_dir = get_dir(PLOTS_DIR)
     base = slugify(name)
 
-    if add_timestamp:
+    if ts_bool:
         base = add_timestamp(base)
 
     path = plot_dir / f"{base}.{fmt}"
@@ -131,6 +131,9 @@ def save_model(
     print(f"model saved to {path}")
     return path
 
+def load_model(fname):
+    path = os.path.join(MODELS_DIR, f"{fname}.joblib")
+    return load(path)
 
 def add_lonlat_coords(ds):
     """
@@ -213,6 +216,7 @@ ML_DATA_ROOT = os.path.join(f"{os.sep}data","lthapa","data2restore","lthapa","ML
 OUTPUTS_DIR = os.path.join(get_repo_root(), "outputs")
 PLOTS_DIR = os.path.join(OUTPUTS_DIR, "plots")
 MODELS_DIR = os.path.join(OUTPUTS_DIR, "models")
+ML_FEATS_DIR = os.path.join(MODELS_DIR, "features")
 FEATURE_OUTPUT_DIR = os.path.join(OUTPUTS_DIR, "features")
 LOG_DIR = os.path.join(OUTPUTS_DIR, 'logs')
 DATA_DIR = os.path.join(get_repo_root(), "src", "data")
