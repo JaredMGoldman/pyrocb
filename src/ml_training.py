@@ -46,12 +46,12 @@ def train_regressor(X : pd.DataFrame, y : pd.DataFrame,
             rmse = np.sqrt(mean_squared_error(y_val, preds))
             r2 = r2_score(y_val, preds)
             fold_metrics.append({
-                'epoch' : epoch,
-                'fold' : fold,
+                'epoch' : epoch+1,
+                'fold' : fold+1,
                 'rmse' : rmse,
                 'r2' : r2
             })
-            print(f"Epoch {epoch} | Fold {fold} | RMSE: {rmse:.4f} | R2: {r2:.4f}")
+            print(f"Epoch {epoch+1} | Fold {fold} | RMSE: {rmse:.4f} | R2: {r2:.4f}")
 
     fold_metrics = pd.DataFrame(fold_metrics)
 
@@ -85,7 +85,7 @@ def process_features(features_csv, seed = 42):
     for cp_idx in df.cp.unique():
         if not (df[hrrr_features].isna().all().all() or df[rave_features].isna().all().all()):
             good_cps.append(cp_idx)
-    df_filtered = df[df.cp.isin( good_cps)]
+    df_filtered = df[df.cp.isin(good_cps)]
     print(f"{len(good_cps)} fires selected")
     for col in df_filtered.columns:
         if col in ["cp", "day"]: 
@@ -179,13 +179,12 @@ if __name__ == "__main__":
                                                             test_data, test_labels, 
                                                             model_fname = model_fname, 
                                                             save_bool = True, drop_vars = drop_vars)
-        import ipdb; ipdb.set_trace()
         train_dataset = (train_data, train_labels)
         test_dataset = (test_data, test_labels)
         plot_importances(model, 'initial_regressor')
         plot_correlation(model, train_dataset, test_dataset, drop_vars = drop_vars, exp_name = 'regression')
     else:
-        model_fname = "initial_regressor_20260310-1440"
+        model_fname = "initial_regressor_20260311-1257"
         model = load_model(model_fname)
         data = [pd.read_csv(os.path.join(ML_FEATS_DIR, fname)) for fname in
                 ["train_data310.csv", "train_labels310.csv", 
