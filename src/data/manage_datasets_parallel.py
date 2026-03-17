@@ -185,6 +185,8 @@ def main(cp: pd.DataFrame,
 
                         # append mode, write header once
                         df_old = pd.read_csv(feature_file)
+                        if CLEANUP:
+                            df_old = remove_invalid_idxs(df_old, logger)
                         pd.concat([df_old, df_out]).to_csv(feature_file, index = False)
                         buffer_rows.clear()
 

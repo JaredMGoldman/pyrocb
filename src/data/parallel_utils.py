@@ -29,6 +29,8 @@ def remove_invalid_idxs(cp_df, logger):
         df = cp_df[cp_df.cp == cp_idx]
         if df[hrrr_features].isna().all().all() or df[rave_features].isna().all().all():
             bad_cps.append(cp_idx)
+        elif df.day.unique().shape != df.day.shape:
+            bad_cps.append(cp_idx)
     logger.info(f"found {len(bad_cps)} invalid fires")
     return cp_df[~cp_df.cp.isin(bad_cps)]
     
@@ -65,7 +67,3 @@ def time_bins(times):
 def safe_buffer(poly, buf=0.15):
     # buffer can occasionally create invalid geometries; buffer(0) cleans in many cases
     return poly.buffer(buf, join_style=3).buffer(0)
-
-def find_bad_data(fname):
-    df = pd.read_csv(fname)
-    import ipdb; ipdb.set_trace()
