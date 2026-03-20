@@ -3,7 +3,7 @@ import pandas as pd
 from shapely import contains, box
 import numpy as np
 
-from ml_training import rave_features, hrrr_features
+from feature_creation import rave_features, hrrr_features
 
 def varname_map(name, var_name):
     if not 'hrrr' in name:

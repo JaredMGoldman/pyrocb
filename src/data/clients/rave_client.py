@@ -35,7 +35,7 @@ class RAVEClient(BaseClient):
       - returns xr.Dataset concatenated over time
     """
     base_url: str = "http://www.ospo.noaa.gov/pub/Blended/RAVE/RAVE-HrlyEmiss-3km"
-    sampling_freq: str = "4H"
+    sampling_freq: str = "2H"
     timeout_s: int = 120
 
     # common coordinate name fallbacks

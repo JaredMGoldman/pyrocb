@@ -2,29 +2,61 @@ import numpy as np
 import os
 import pandas as pd
 from sklearn.ensemble import RandomForestRegressor
+from sklearn.linear_model import LinearRegression
+
 from sklearn.metrics import mean_squared_error, r2_score
 from sklearn.model_selection import KFold
-from utils.utils import save_model, load_model, FEATURE_OUTPUT_DIR, ML_FEATS_DIR
+from utils.utils import save_model, load_model, \
+                        FEATURE_OUTPUT_DIR, ML_FEATS_DIR, \
+                        PLOTS_DIR, MODELS_DIR
+
+from feature_creation import process_features
 from ml_eval import plot_importances, plot_correlation
-from random import sample
+import argparse
 
-hrrr_features = [ "hrrr_dpt","hrrr_u","hrrr_v","hrrr_t", \
-                "hrrr_rh","hrrr_tp","hrrr_mstav","hrrr_sdwe"]
-rave_features = ["rave_FRP_MEAN","rave_FRP_SD"]
+model_dict = {
+    'rand_forest' : RandomForestRegressor,
+    'rf' : RandomForestRegressor,
+    'ols' : LinearRegression,
+    'least_sq' : LinearRegression
+}
 
-all_features = ["esi_DFPPM", "modis_MaxFRP","rave_FRP_MEAN","rave_FRP_SD",
-                "hrrr_dpt","hrrr_u","hrrr_v","hrrr_t",
-                "hrrr_rh","hrrr_tp","hrrr_mstav","hrrr_sdwe"]
+kwargs_dict  = {
+    RandomForestRegressor : {'n_estimators' : 100,
+                                    'random_state' : 42,
+                                    'max_depth' : 10,
+                                    'criterion' : 'squared_error'},
+    LinearRegression : {}
+}
+
+parser = argparse.ArgumentParser(
+                    prog='MachineLearning',
+                    description='run ml training and eval script')
+
+parser.add_argument('--train', action = 'store_true', dest = 'train', default= False,
+                    help = "train the model")
+parser.add_argument('--pred', action = 'store_true', dest = 'pred_bool', default = False,
+                    help = "predict FRP growth rather than straight FRP")
+parser.add_argument('--pred_days', type = int, dest = 'pred_days', default = 1,
+                    help = "number of days for prediction")
+parser.add_argument('--model', type= str, choices = model_dict.keys(), default='rf',
+                    help= "select from differnt sklearn model types available")
+parser.add_argument('-n', '--name', dest='name', type = str, default='my_model',
+                    help = "name of the model to save, informs file naming conventions")
+parser.add_argument('-d', '--data', type = str, dest = 'data', 
+                    default = "average_polygon_features_parallel.csv",
+                    help = f"path to data file relative to {FEATURE_OUTPUT_DIR}")
+parser.add_argument('-p', '--plot-dir', type = str, dest = 'plot', 
+                    default = "",
+                    help = f"path to plotting location relative to {PLOTS_DIR}")
+
 
 def train_regressor(X : pd.DataFrame, y : pd.DataFrame, 
                     X_test : pd.DataFrame, y_test : pd.DataFrame,
                     model_class = RandomForestRegressor,
                     model_fname = "initial_regressor",
                     save_bool = True,
-                    model_kwargs = {'n_estimators' : 100,
-                                    'random_state' : 42,
-                                    'max_depth' : 10,
-                                    'criterion' : 'squared_error'}, 
+                    model_kwargs = {}, 
                     num_epochs = 1, num_splits = 5, shuffle = True, 
                     rand_state = 42, drop_vars = []):
     X = X.drop(drop_vars, axis = 1)
@@ -78,119 +110,47 @@ def train_regressor(X : pd.DataFrame, y : pd.DataFrame,
         save_model(model, model_fname)
     return model, fold_metrics, test_metrics
 
-def process_features(features_csv, seed = 42):
-    rng = np.random.default_rng(seed)
-    df = pd.read_csv(features_csv)
-    good_cps = []
-    for cp_idx in df.cp.unique():
-        if not (df[hrrr_features].isna().all().all() or df[rave_features].isna().all().all()):
-            good_cps.append(cp_idx)
-    df_filtered = df[df.cp.isin(good_cps)]
-    print(f"{len(good_cps)} fires selected")
-    for col in df_filtered.columns:
-        if col in ["cp", "day"]: 
-            continue
-        elif col in ["rave_FRP_MEAN", "rave_FRP_SD", "modis_MaxFRP"]:
-            this_col = df_filtered[col]
-            col_mean = this_col.mean(skipna = True)
-            col_std = this_col.std(skipna = True)
-            
-            na_mask = this_col.isna()
-
-            df_filtered.loc[na_mask, col] = np.zeros(na_mask.sum())
-
-            normalized = (df_filtered[col] - np.min(df_filtered[col]))/(np.max(df_filtered[col])- np.min(df_filtered[col]))
-            df_filtered[col] = normalized
-        else:
-            this_col = df_filtered[col]
-            col_mean = this_col.mean(skipna = True)
-            col_std = this_col.std(skipna = True)
-            
-            na_mask = this_col.isna()
-
-            rand_vals = rng.normal(loc = col_mean, scale = col_std, size = na_mask.sum())
-            df_filtered.loc[na_mask, col] = rand_vals
-
-            normalized = (df_filtered[col] - np.min(df_filtered[col]))/(np.max(df_filtered[col])- np.min(df_filtered[col]))
-            df_filtered[col] = normalized
-    
-    df_filtered['n_days'] = None
-    for cp_idx in df_filtered.cp.unique():
-        days = df_filtered[df_filtered.cp == cp_idx].day
-        n_days = (pd.Timestamp(days.max()) - pd.Timestamp(days.min())).days + 1
-        df_filtered["n_days"] = df_filtered["n_days"].where(df_filtered.cp != cp_idx, n_days)
-
-    train_X, train_y, test_X, test_y = split_data(df_filtered, all_features)
-    print("completed data processing")
-    return train_X, train_y, test_X, test_y
-
-def split_data(df, feature_names, target_name = 'rave_FRP_MEAN', 
-                    train_split = 0.8, stratify_by = 'n_days', 
-                    lookback_days = 1, idx_name = 'cp', end_pad = 1):
-    # split data into train and test subsetted by fire duration
-    # data are feature labels for previous two days (yesterday and today)
-    train_idx = []
-    for bucket in df[stratify_by].unique():
-        bucket_idxs = df[df[stratify_by] == bucket][idx_name].unique()
-        train_idx.extend(sample(list(bucket_idxs), k = int(len(bucket_idxs)*train_split)))
-    
-    train_data = []
-    test_data = []
-
-    train_labels = []
-    test_labels = []
-    for idx in df[idx_name].unique():
-        this_data = df[df[idx_name] == idx]
-        days = sorted(this_data.day.unique())
-        for day_i in range(lookback_days, len(days)-end_pad-1):
-            day_dict = {'idx' : idx, stratify_by : np.squeeze(this_data[stratify_by].unique())}
-            for day_j in range(lookback_days + 1):
-                data_j = this_data[this_data.day == days[day_i - day_j]][feature_names]
-                for name in feature_names:
-                    day_dict[f"{name}_d{day_j}"] = np.squeeze(data_j[name])
-
-            label = np.squeeze(this_data[this_data.day == days[day_i+1]][target_name])
-            if idx in train_idx:
-                train_data.append(day_dict)
-                train_labels.append({target_name : label})
-            else:
-                test_data.append(day_dict)
-                test_labels.append({target_name : label})
-
-    train_data = pd.DataFrame(train_data)
-    train_labels = pd.DataFrame(train_labels)
-    test_data = pd.DataFrame(test_data)
-    test_labels = pd.DataFrame(test_labels)
-    return train_data, train_labels, test_data, test_labels
+def main(data_fname, model_name, 
+        drop_vars = ["idx", "n_days"], 
+        plot_dir = PLOTS_DIR,
+        model_class = RandomForestRegressor, 
+        pred_growth = True,
+        pred_days = 1):   
+    train_data, train_labels, test_data, test_labels = process_features(data_fname, 
+                                                                        pred_growth = pred_growth,
+                                                                        pred_days = pred_days)
+    [df.to_csv(os.path.join(ML_FEATS_DIR, fname), index = False) for df, fname in 
+        zip([train_data, train_labels, test_data, test_labels],
+            [f"train_data_{model_name}.csv", f"train_labels_{model_name}.csv", 
+                f"test_data_{model_name}.csv", f"test_labels_{model_name}.csv"])]
+    drop_vars = ["idx", "n_days"]
+    model, fold_metrics, test_metrics = train_regressor(train_data, train_labels, 
+                                                        test_data, test_labels, 
+                                                        model_fname = model_name, 
+                                                        save_bool = True, 
+                                                        drop_vars = drop_vars,
+                                                        model_class = model_class)
+    train_dataset = (train_data, train_labels)
+    test_dataset = (test_data, test_labels)
+    plot_importances(model, model_name, out_dir = plot_dir)
+    plot_correlation(model, train_dataset, test_dataset, 
+                        drop_vars = drop_vars, exp_name = model_name,
+                        out_dir = plot_dir)
 
 if __name__ == "__main__":
-    features_fname = os.path.join(FEATURE_OUTPUT_DIR, "data_gen_subset.csv")
+    args = parser.parse_args()
+
+    features_fname = os.path.join(FEATURE_OUTPUT_DIR, args.data)
+    model_name = args.name
+    plot_dir = f"{PLOTS_DIR}/{args.plot}"
+    model_class = model_dict[args.model]
+    pred_days = args.pred_days
+    pred_growth = args.pred_bool
+
+    main(features_fname, model_name, 
+         plot_dir = plot_dir, 
+         model_class = model_class,
+         pred_growth = pred_growth,
+         pred_days = pred_days)
     
-    train = False
     
-    if train:
-        model_fname = "initial_regressor"
-        train_data, train_labels, test_data, test_labels = process_features(features_fname)
-        [df.to_csv(os.path.join(ML_FEATS_DIR, fname), index = False) for df, fname in 
-            zip([train_data, train_labels, test_data, test_labels],
-                ["train_data310.csv", "train_labels310.csv", "test_data310.csv", "test_labels310.csv"])]
-        drop_vars = ["idx", "n_days"]
-        model, fold_metrics, test_metrics = train_regressor(train_data, train_labels, 
-                                                            test_data, test_labels, 
-                                                            model_fname = model_fname, 
-                                                            save_bool = True, drop_vars = drop_vars)
-        train_dataset = (train_data, train_labels)
-        test_dataset = (test_data, test_labels)
-        plot_importances(model, 'initial_regressor')
-        plot_correlation(model, train_dataset, test_dataset, drop_vars = drop_vars, exp_name = 'regression')
-    else:
-        model_fname = "initial_regressor_20260311-1257"
-        model = load_model(model_fname)
-        data = [pd.read_csv(os.path.join(ML_FEATS_DIR, fname)) for fname in
-                ["train_data310.csv", "train_labels310.csv", 
-                "test_data310.csv", "test_labels310.csv"]]
-        train_data = (data[0], data[1])
-        test_data = (data[2], data[3])
-        drop_vars = ["idx", "n_days"]
-        plot_importances(model, 'initial_regressor')
-        plot_correlation(model, train_data, test_data, drop_vars = drop_vars, exp_name = 'regression')
