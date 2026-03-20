@@ -25,13 +25,21 @@ conda install -c conda-forge -y cartopy geopandas pandas numpy scikit-learn scip
 All plots will be saved to the `outputs/plots/data_science/` directory
 
 ### Generate the eofs
-> cd src
-> python bndrywise_eof.py
+```
+cd src
+python bndrywise_eof.py
+```
 
 ### Train the Ordinary Least Squares Model
-> python ml_training.py --pred --plot-dir data_science/models -d cleaned_data.csv  --plot-dir data_science/mode --model ols --name ols_pred1 --pred_days 1
-> python ml_training.py --pred --plot-dir data_science/models -d cleaned_data.csv  --plot-dir data_science/mode --model ols --name ols_pred2 --pred_days 2
+```
+python ml_training.py --pred --plot-dir data_science/models -d cleaned_data.csv  --plot-dir data_science/mode --model ols --name ols_pred1 --pred_days 1
+
+python ml_training.py --pred --plot-dir data_science/models -d cleaned_data.csv  --plot-dir data_science/mode --model ols --name ols_pred2 --pred_days 2
+```
 
 ### Train Random Forest Model
-> python ml_training.py --pred --plot-dir data_science/models -d cleaned_data.csv --plot-dir data_science/mode --model rf --name rf_pred1 --pred_days 1
-> python ml_training.py --pred --plot-dir data_science/models -d cleaned_data.csv --plot-dir data_science/mode --model rf --name rf_pred2 --pred_days 2
+```
+python ml_training.py --pred --plot-dir data_science/models -d cleaned_data.csv --plot-dir data_science/mode --model rf --name rf_pred1 --pred_days 1
+
+python ml_training.py --pred --plot-dir data_science/models -d cleaned_data.csv --plot-dir data_science/mode --model rf --name rf_pred2 --pred_days 2
+```
