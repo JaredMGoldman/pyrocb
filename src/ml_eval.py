@@ -10,7 +10,7 @@ from utils.utils import PLOTS_DIR
 def plot_importances(model, exp_name, out_dir):
     importance = None
     if not 'feature_importances_' in dir(model):
-        importance = model.coef_
+        importance = np.abs(model.coef_)
     else:
         importance = model.feature_importances_
     feature_names = model.feature_names_in_
