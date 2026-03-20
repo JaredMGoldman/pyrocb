@@ -19,7 +19,8 @@ python -m pip install -e .
 conda install -c conda-forge -y cartopy geopandas pandas numpy scikit-learn scipy eofs
 ```
 
-Copy the dataset `cleaned_data.csv` into your `pyrocb/outputs/features/` directory
+1. Copy the dataset `cleaned_data.csv` into your `pyrocb/outputs/features/` directory (https://drive.google.com/file/d/1wtl44_bBg1ay7D90NcVuvxzacFiqyjWp/view?usp=drive_link)
+2. Copy the dataset `cp_poly.gpkg` into your `pyrocb/src/data/` directory (https://drive.google.com/file/d/1_lXk51jk2G-dTSl0cCSgJgMhC5vKmDP8/view?usp=sharing)
 
 All plots will be saved to the `outputs/plots/data_science/` directory
 
