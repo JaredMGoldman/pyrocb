@@ -1,6 +1,7 @@
 import numpy as np
 import os
 import pandas as pd
+from quantile_forest import RandomForestQuantileRegressor
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.linear_model import LinearRegression
 
@@ -8,21 +9,21 @@ from sklearn.metrics import mean_squared_error, r2_score
 from sklearn.model_selection import KFold
 from utils.utils import save_model, load_model, \
                         FEATURE_OUTPUT_DIR, ML_FEATS_DIR, \
-                        PLOTS_DIR, MODELS_DIR
+                        PLOTS_DIR
 
 from feature_creation import process_features
 from ml_eval import plot_importances, plot_correlation
 import argparse
 
 model_dict = {
-    'rand_forest' : RandomForestRegressor,
-    'rf' : RandomForestRegressor,
+    'rand_forest' : RandomForestQuantileRegressor,
+    'rf' : RandomForestQuantileRegressor,
     'ols' : LinearRegression,
     'least_sq' : LinearRegression
 }
 
 kwargs_dict  = {
-    RandomForestRegressor : {'n_estimators' : 100,
+    RandomForestQuantileRegressor : {'n_estimators' : 100,
                                     'random_state' : 42,
                                     'max_depth' : 10,
                                     'criterion' : 'squared_error'},
@@ -33,8 +34,6 @@ parser = argparse.ArgumentParser(
                     prog='MachineLearning',
                     description='run ml training and eval script')
 
-parser.add_argument('--train', action = 'store_true', dest = 'train', default= False,
-                    help = "train the model")
 parser.add_argument('--pred', action = 'store_true', dest = 'pred_bool', default = False,
                     help = "predict FRP growth rather than straight FRP")
 parser.add_argument('--pred_days', type = int, dest = 'pred_days', default = 1,
@@ -49,7 +48,8 @@ parser.add_argument('-d', '--data', type = str, dest = 'data',
 parser.add_argument('-p', '--plot-dir', type = str, dest = 'plot', 
                     default = "",
                     help = f"path to plotting location relative to {PLOTS_DIR}")
-
+parser.add_argument('--eval', action = 'store_true', dest = 'eval', default= False,
+                    help = "evaluate the model")
 
 def train_regressor(X : pd.DataFrame, y : pd.DataFrame, 
                     X_test : pd.DataFrame, y_test : pd.DataFrame,
@@ -57,7 +57,7 @@ def train_regressor(X : pd.DataFrame, y : pd.DataFrame,
                     model_fname = "initial_regressor",
                     save_bool = True,
                     model_kwargs = {}, 
-                    num_epochs = 1, num_splits = 5, shuffle = True, 
+                    num_epochs = 1, num_splits = 3, shuffle = True, 
                     rand_state = 42, drop_vars = []):
     X = X.drop(drop_vars, axis = 1)
     X_test = X_test.drop(drop_vars, axis = 1)
@@ -115,7 +115,7 @@ def main(data_fname, model_name,
         plot_dir = PLOTS_DIR,
         model_class = RandomForestRegressor, 
         pred_growth = True,
-        pred_days = 1):   
+        pred_days = 1, eval_model = False):   
     train_data, train_labels, test_data, test_labels = process_features(data_fname, 
                                                                         pred_growth = pred_growth,
                                                                         pred_days = pred_days)
@@ -124,12 +124,15 @@ def main(data_fname, model_name,
             [f"train_data_{model_name}.csv", f"train_labels_{model_name}.csv", 
                 f"test_data_{model_name}.csv", f"test_labels_{model_name}.csv"])]
     drop_vars = ["idx", "n_days"]
-    model, fold_metrics, test_metrics = train_regressor(train_data, train_labels, 
-                                                        test_data, test_labels, 
-                                                        model_fname = model_name, 
-                                                        save_bool = True, 
-                                                        drop_vars = drop_vars,
-                                                        model_class = model_class)
+    if not eval_model:
+        model, _, _ = train_regressor(train_data, train_labels, 
+                                                            test_data, test_labels, 
+                                                            model_fname = model_name, 
+                                                            save_bool = True, 
+                                                            drop_vars = drop_vars,
+                                                            model_class = model_class)
+    else:
+        model = load_model(model_name)
     train_dataset = (train_data, train_labels)
     test_dataset = (test_data, test_labels)
     plot_importances(model, model_name, out_dir = plot_dir)
@@ -147,10 +150,13 @@ if __name__ == "__main__":
     pred_days = args.pred_days
     pred_growth = args.pred_bool
 
+    eval_model = args.eval
+
     main(features_fname, model_name, 
          plot_dir = plot_dir, 
          model_class = model_class,
          pred_growth = pred_growth,
-         pred_days = pred_days)
+         pred_days = pred_days,
+         eval_model = eval_model)
     
     

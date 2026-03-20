@@ -3,8 +3,10 @@ import matplotlib.pyplot as plt
 import os
 import pandas as pd
 
+from sklearn.base import clone
 from sklearn.metrics import mean_squared_error, r2_score
-
+from sklearn.utils import resample
+from quantile_forest import RandomForestQuantileRegressor
 from utils.utils import PLOTS_DIR
 
 def plot_importances(model, exp_name, out_dir):
@@ -59,10 +61,14 @@ def plot_correlation(model, training_data, testing_data, exp_name = 'regression'
         train_pred_bkt = train_pred[bucket_idxs]
 
         bucket_stats[str(bucket)]['train_rmse'] = np.sqrt(mean_squared_error(y_train_bkt, train_pred_bkt))
+        bucket_stats[str(bucket)]['train_ci'] = bootstrap_intervals(model, X_train.iloc[bucket_locs], y_train_bkt, 
+                                                                      X_test.loc[X_test[stratify_by] == bucket])
         bucket_stats[str(bucket)]['train_r2'] = r2_score(y_train_bkt, train_pred_bkt)
 
     for bucket in np.unique(X_test[stratify_by]):
-        bucket_locs = X_test.loc[X_train[stratify_by] == bucket].index
+        if not str(bucket) in bucket_stats.keys():
+            continue
+        bucket_locs = X_test.loc[X_test[stratify_by] == bucket].index
         bucket_idxs = [X_test.index.get_loc(loc) for loc in bucket_locs]
         if len(bucket_idxs) == 0:
             continue
@@ -79,17 +85,19 @@ def plot_correlation(model, training_data, testing_data, exp_name = 'regression'
 
     r2_test = [bucket_stats[str(bucket)]['test_r2'] for bucket in buckets]
     r2_train = [bucket_stats[str(bucket)]['train_r2'] for bucket in buckets]
-    
+
+    ci_train = [bucket_stats[str(bucket)]['train_ci'] for bucket in buckets]
+
     if stratify_by == 'n_days':
         buckets = np.array(buckets) - 2
 
     plt.title("RMSE by Day")
     plt.xlabel("Duration")
     plt.ylabel("RMSE")
-    plt.plot(buckets, rmse_train, label = 'train rmse')
-    plt.plot(buckets, rmse_test, label = 'test rmse')
+    plt.errorbar(buckets, rmse_train, label = 'train rmse', yerr=ci_train)
+    plt.errorbar(buckets, rmse_test, label = 'test rmse', yerr=ci_train)
     plt.legend()
-
+    plt.ylim((-0.5,1.5))
     os.makedirs(f"{out_dir}", exist_ok = True)
     plt.savefig(f"{out_dir}/{exp_name}_rmse.png")
     plt.close()
@@ -101,8 +109,37 @@ def plot_correlation(model, training_data, testing_data, exp_name = 'regression'
     plt.ylabel(r"$R^2$")
     plt.plot(buckets, r2_train, label = r'train $r^2$')
     plt.plot(buckets, r2_test, label = r'test $r^2$')
+    plt.ylim((0,1))
     plt.legend()
 
     plt.savefig(f"{out_dir}/{exp_name}_r2.png")
     plt.close()
     print(f"r2 stats saved to {out_dir}/{exp_name}_r2.png")
+
+def bootstrap_intervals(model, X_train, y_train, X_test, n_iterations=1000):
+    all_preds = []
+    if len(X_test) == 0:
+        return 0
+    if type(model) is RandomForestQuantileRegressor:
+        X_test = X_test.drop(['n_days', 'idx', 'index'], axis = 1)
+        intervals = model.predict(X_test, quantiles=[0.025, 0.5, 0.975])
+
+        lower_val = intervals[:, 0]
+        upper_val = intervals[:, 2]
+        return np.mean(upper_val - lower_val)
+    
+    for _ in range(n_iterations):
+        this_model = clone(model)
+        X_resample, y_resample = resample(X_train, y_train)
+        
+        this_model.fit(X_resample, y_resample)
+        
+        all_preds.append(np.mean(this_model.predict(X_test)))
+    
+    all_preds = np.array(all_preds)
+    
+    lower_bound = np.percentile(all_preds, 2.5, axis=0)
+    upper_bound = np.percentile(all_preds, 97.5, axis=0)
+    uncertainty = upper_bound - lower_bound
+    
+    return uncertainty
