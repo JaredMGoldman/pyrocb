@@ -1,6 +1,7 @@
 outputs/*/*.png
 outputs/*/*.csv
 outputs/*/*.log
+outputs/*/*.joblib
 outputs/*.csv
 data/cp.5
 data/cp_poly.gpkg

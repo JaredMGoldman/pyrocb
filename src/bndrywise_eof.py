@@ -115,7 +115,7 @@ if __name__ == "__main__":
     neofs = 5
     seed = 42
     boundary_index = 'CLIMDIV'
-    film_only = True
+    film_only = False
 
     data_fname = "cleaned_data.csv"
     rng = np.random.default_rng(seed)
@@ -127,7 +127,7 @@ if __name__ == "__main__":
     merged_gdf = gdf.join(df.set_index('cp'),on = 'cp',how = 'inner',rsuffix='gdf')
     merged_gdf['day'] = pd.to_datetime(merged_gdf['day'], format = 'mixed')
 
-    for var_name in ["rave_FRP_MEAN"]:
+    for var_name in all_features:
         if var_name in ["rave_FRP_MEAN", "rave_FRP_SD", "modis_MaxFRP"]:
             this_col = merged_gdf[var_name]
             col_mean = this_col.mean(skipna = True)
@@ -152,7 +152,7 @@ if __name__ == "__main__":
         if film_only:
             from feature_film import create_fire_timelapse
             os.makedirs(f"{PLOTS_DIR}/data_science/films/", exist_ok = True)
-            create_fire_timelapse(this_gdf,var_name, f"{PLOTS_DIR}/data_science/films/{var_name}_timelapse_trial.mp4")
+            create_fire_timelapse(this_gdf,var_name, f"{PLOTS_DIR}/data_science/films/{var_name}_timelapse.mp4")
             continue
         pivot_df = this_gdf.pivot(index='day', columns=boundary_index, values=var_name)
 
