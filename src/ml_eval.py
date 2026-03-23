@@ -80,8 +80,12 @@ def plot_correlation(model, training_data, testing_data, exp_name = 'regression'
     plt.plot(buckets, rmse_train, label = 'train rmse')
     plt.plot(buckets, rmse_test, label = 'test rmse')
     plt.legend()
-    path = save_plot(f"{exp_name}_rmse")
-    print(f"rmse stats saved to {path}")
+    plt.ylim((-0.5,1))
+    os.makedirs(f"{out_dir}", exist_ok = True)
+    plt.savefig(f"{out_dir}/{exp_name}_rmse.png")
+    plt.close()
+    
+    print(f"rmse stats saved to {out_dir}/{exp_name}_rmse.png")
 
     plt.title(r"$R^2$ by Day")
     plt.xlabel("Duration")
