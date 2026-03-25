@@ -11,11 +11,11 @@ import pandas as pd
 from rasterio.features import geometry_mask
 import xarray as xr
 from shapely.geometry import Polygon, MultiPolygon
-from rio_utils import open_geotiff_safe
+from utils.rio_utils import open_geotiff_safe
 
 # Optional but recommended for HDF-EOS -> xarray
 import rasterio
-from utils import add_lonlat_coords, buffer_polygon_meters, \
+from utils.utils import add_lonlat_coords, buffer_polygon_meters, \
                     CLIENTS_DIR, CACHE_BASE_DIR
 from clients.base_client import BaseClient
 import os

@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date
 from io import StringIO
 from typing import Dict, List, Literal, Optional, Sequence, Tuple, Union
-from utils import FIRMS_KEY_FNAME, CLIENTS_DIR, set_env_var, buffer_polygon_meters
+from utils.utils import FIRMS_KEY_FNAME, CLIENTS_DIR, set_env_var, buffer_polygon_meters
 # 375m accuracy
 
 import os

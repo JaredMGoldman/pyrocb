@@ -9,8 +9,8 @@ from typing import Dict, Any, List
 import traceback
 
 from data.parallel_utils import skip_fire, is_conus, safe_buffer, time_bins, varname_map
-from logging_utils import log_cp, set_cp, log_client, set_client, configure_queue_logging, init_worker_logging, reset_tokens
-from utils import LOG_DIR
+from utils.logging_utils import log_cp, set_cp, log_client, set_client, reset_tokens
+from utils.utils import LOG_DIR
 
 def compute_daily_features_for_fire(
     cp_idx,
@@ -26,7 +26,6 @@ def compute_daily_features_for_fire(
     Runs ALL client queries for one fire and returns list of day_dict rows.
     Designed to be executed in a worker process.
     """
-
     fire_poly = this_poly_gdf["geometry"].values[0]
     fire_tmin = pd.Timestamp(this_cp_df["dtime_min"].values[0])
     fire_tmax = pd.Timestamp(this_cp_df["dtime_max"].values[0])
@@ -38,7 +37,6 @@ def compute_daily_features_for_fire(
 
     start = fire_tmin - pd.Timedelta(feature_start_pad)
     end   = fire_tmax + pd.Timedelta(feature_end_pad)
-
     def run_one_client(spec):
         name = spec["name"]
         vars_ = spec["vars"]
@@ -75,9 +73,6 @@ def compute_daily_features_for_fire(
         Top-level process worker wrapper.
         Logs full traceback on failure and returns None instead of crashing the pool.
         """
-        # configure_queue_logging(log_queue)
-        # init_worker_logging(log_queue)
-
         crash_dir = Path(f"{LOG_DIR}/worker_crashes")
         crash_dir.mkdir(parents=True, exist_ok=True)
         crash_file = open(crash_dir / f"worker_{os.getpid()}.log", "a")
@@ -129,7 +124,6 @@ def compute_daily_features_for_fire(
                 os.remove(crash_dir / f"worker_{os.getpid()}.log")
             except Exception:
                 pass
-        
     ds_list = []
     if DEBUG_MODE:
         for spec in client_query_specs:

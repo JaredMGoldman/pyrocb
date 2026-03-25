@@ -15,8 +15,8 @@ from shapely.geometry import Polygon, MultiPolygon, Point
 from shapely import points, contains
 import shutil
 
-from utils import buffer_polygon_meters, CACHE_BASE_DIR
-from rio_utils import open_netcdf_safe_cached
+from utils.utils import buffer_polygon_meters, CACHE_BASE_DIR
+from utils.rio_utils import open_netcdf_safe_cached
 from data.clients.base_client import BaseClient
 
 Geom = Union[Polygon, MultiPolygon]
@@ -35,7 +35,7 @@ class RAVEClient(BaseClient):
       - returns xr.Dataset concatenated over time
     """
     base_url: str = "http://www.ospo.noaa.gov/pub/Blended/RAVE/RAVE-HrlyEmiss-3km"
-    sampling_freq: str = "4H"
+    sampling_freq: str = "2H"
     timeout_s: int = 120
 
     # common coordinate name fallbacks

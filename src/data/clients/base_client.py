@@ -1,9 +1,9 @@
-from logging_utils import *
+from utils.logging_utils import *
 from pathlib import Path
 import requests
 import shutil
-from utils import make_cache_dir
-from rio_utils import download_file_safe
+from utils.utils import make_cache_dir
+from utils.rio_utils import download_file_safe
 
 # log_client = contextvars.ContextVar("log_client", default="library")
 # log_task = contextvars.ContextVar("log_task", default="-")

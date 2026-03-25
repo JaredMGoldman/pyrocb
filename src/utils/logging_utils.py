@@ -24,7 +24,7 @@ LOG_FORMAT = (
     "%(asctime)s | %(levelname)s | "
     "client=%(client)s | "
     "cp=%(cp_idx)s | "
-    "pid=%(process)d | thread=%(threadName)s | "
+    "pid=%(process)d | "
     "func=%(funcName)s | "
     "%(message)s"
 )

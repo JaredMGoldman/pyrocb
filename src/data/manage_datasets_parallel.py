@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from logging_utils import start_log_listener, init_worker_logging
-from data.parallel_utils import varname_map
+from utils.logging_utils import start_log_listener, init_worker_logging
+from data.parallel_utils import varname_map, remove_invalid_idxs
 from data.specs import client_query_specs, hrrr_headers
 from data.dataset_worker import compute_daily_features_for_fire
-from utils import FEATURE_OUTPUT_DIR, DATA_DIR, LOG_DIR
+from utils.utils import FEATURE_OUTPUT_DIR, DATA_DIR, LOG_DIR
 
 import argparse
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -40,6 +40,8 @@ parser.add_argument(
         "--log-level", "-l",
         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"], default="WARNING",
         help="Desired logging level (e.g., DEBUG, INFO, WARNING, ERROR, CRITICAL)")
+parser.add_argument('--cleanup', action = 'store_true', dest = 'cleanup', default= False,
+                    help = "clean up existing feature file by filtering out corrupted fires")
 
 
 def main(cp: pd.DataFrame, 
@@ -49,7 +51,8 @@ def main(cp: pd.DataFrame,
          max_workers: int = 8,
          DEBUG_MODE: bool = False,
          THIRD: int = 0,
-         logging_level: int = logging.INFO):
+         logging_level: int = logging.INFO,
+         CLEANUP: bool = False):
     # -----------------------------
     # Main driver
     # -----------------------------
@@ -63,7 +66,12 @@ def main(cp: pd.DataFrame,
     written_header = False
     all_cps = list(cp[cp['t_min'] + 1 < cp['t_max']].cp.unique())
     if os.path.exists(feature_file):
-        processed_cps = pd.read_csv(feature_file).cp.unique()
+        logger.info(f"loading existing file {feature_file}")
+        feature_df = pd.read_csv(feature_file)
+        if CLEANUP:
+            logger.info("cleaning up features")
+            feature_df = remove_invalid_idxs(feature_df, logger)
+        processed_cps = feature_df.cp.unique()
         all_cps = list(set(all_cps) - set(list(processed_cps)))
         written_header = True
         
@@ -177,6 +185,8 @@ def main(cp: pd.DataFrame,
 
                         # append mode, write header once
                         df_old = pd.read_csv(feature_file)
+                        if CLEANUP:
+                            df_old = remove_invalid_idxs(df_old, logger)
                         pd.concat([df_old, df_out]).to_csv(feature_file, index = False)
                         buffer_rows.clear()
 
@@ -200,4 +210,5 @@ if __name__ == "__main__":
          max_workers   = args.num_workers,
          DEBUG_MODE    = args.debug,
          THIRD         = args.third,
-         logging_level = getattr(logging, args.log_level.upper()))
+         logging_level = getattr(logging, args.log_level.upper()),
+         CLEANUP       = args.cleanup)
