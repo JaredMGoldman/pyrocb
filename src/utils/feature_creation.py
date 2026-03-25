@@ -11,7 +11,6 @@ all_features = ["esi_DFPPM", "modis_MaxFRP","rave_FRP_MEAN","rave_FRP_SD",
                 "hrrr_dpt","hrrr_u","hrrr_v","hrrr_t",
                 "hrrr_rh","hrrr_tp","hrrr_mstav","hrrr_sdwe"]
 
-
 def process_features(features_csv, seed = 42, target_name = 'rave_FRP_MEAN', 
                     train_split = 0.8, stratify_by = 'n_days', 
                     lookback_days = 1, idx_name = 'cp', end_pad = 1,

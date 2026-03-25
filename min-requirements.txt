@@ -1,8 +1,0 @@
-pandas
-geopandas
-numpy
-xarray
-shapely
-matplotlib
-rasterio==1.4
-rioxarray

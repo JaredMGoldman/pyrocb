@@ -18,5 +18,8 @@ setup(
         "xarray",
         "geopandas",
         "matplotlib",
+        "rasterio",
+        "scipy",
+        "opencv"
     ]
 )

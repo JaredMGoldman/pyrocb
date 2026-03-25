@@ -11,7 +11,7 @@ from utils.utils import save_model, load_model, \
                         FEATURE_OUTPUT_DIR, ML_FEATS_DIR, \
                         PLOTS_DIR
 
-from feature_creation import process_features
+from utils.feature_creation import process_features
 from ml_eval import plot_importances, plot_correlation
 import argparse
 

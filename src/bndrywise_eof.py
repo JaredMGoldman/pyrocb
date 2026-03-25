@@ -7,7 +7,7 @@ from eofs.standard import Eof
 import matplotlib.pyplot as plt
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
-from feature_creation import all_features
+from utils.feature_creation import all_features
 
 def snap_to_bndry(gdf, var_name, boundary_index, date_col='day'):
     if boundary_index == 'name':
@@ -150,7 +150,7 @@ if __name__ == "__main__":
 
         this_gdf = snap_to_bndry(merged_gdf, var_name, boundary_index)
         if film_only:
-            from feature_film import create_fire_timelapse
+            from utils.feature_film import create_fire_timelapse
             os.makedirs(f"{PLOTS_DIR}/data_science/films/", exist_ok = True)
             create_fire_timelapse(this_gdf,var_name, f"{PLOTS_DIR}/data_science/films/{var_name}_timelapse.mp4")
             continue
