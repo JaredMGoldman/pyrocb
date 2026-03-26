@@ -1,6 +1,25 @@
 import os
-from utils.utils import get_repo_root
 from pathlib import Path
+import subprocess
+
+
+def get_repo_root() -> Path:
+    """
+    Return the root directory of the current git repository.
+
+    Works when executed anywhere inside the repo.
+    Raises RuntimeError if not in a git repo.
+    """
+    try:
+        out = subprocess.check_output(
+            ["git", "rev-parse", "--show-toplevel"],
+            stderr=subprocess.STDOUT,
+            text=True,
+        ).strip()
+        return Path(out)
+    except Exception as e:
+        raise RuntimeError("Not inside a git repository (git rev-parse failed).") from e
+
 
 ML_DATA_ROOT = os.path.join(f"{os.sep}data","lthapa","data2restore","lthapa","ML_daily")
 
