@@ -11,15 +11,5 @@ setup(
     package_dir={"": "src"},
     packages=find_packages(where="src"),
     include_package_data=True,
-    install_requires=[
-        "numpy",
-        "pandas",
-        "scikit-learn",
-        "xarray",
-        "geopandas",
-        "matplotlib",
-        "rasterio",
-        "scipy",
-        "opencv"
-    ]
+    install_requires=[]
 )
