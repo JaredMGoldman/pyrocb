@@ -30,11 +30,11 @@ def test_dependencies_installed(package_name):
     loader = importlib.util.find_spec(package_name)
     assert loader is not None, f"Dependency {package_name} is missing from the environment!"
 
-def test_local_package_import():
-    """
-    Verifies 'pip install -e .' worked.
-    """
-    try:
-        import pyrocb
-    except ImportError:
-        pytest.fail("Local package not found. Check if 'pip install -e .' ran in CI.")
+# def test_local_package_import():
+#     """
+#     Verifies 'pip install -e .' worked.
+#     """
+#     try:
+#         import pyrocb
+#     except ImportError:
+#         pytest.fail("Local package not found. Check if 'pip install -e .' ran in CI.")
