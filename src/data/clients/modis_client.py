@@ -17,7 +17,7 @@ from utils.rio_utils import open_geotiff_safe
 import rasterio
 from utils.utils import add_lonlat_coords, buffer_polygon_meters, \
                     CLIENTS_DIR, CACHE_BASE_DIR
-from clients.base_client import BaseClient
+from data.clients.base_client import BaseClient
 import os
 
 
@@ -334,17 +334,12 @@ class MODISClient(BaseClient):
         # Many MODIS land HDF subdatasets will carry an implicit sinusoidal CRS in rio attrs.
         # If ds has 2D lon/lat already, use them. Otherwise, rely on rioxarray clip if possible.
         try:            # Reproject polygon into raster CRS if needed
-            if ds.rio.crs is not None and str(ds.rio.crs).upper() != "EPSG:4326":
-                gdf = gdf.to_crs(ds.rio.crs)
+            if ds.rio.crs is None:
+                pass
 
-            mask = geometry_mask(
-                geometries=[geom.__geo_interface__ for geom in gdf.geometry],
-                out_shape=(ds.sizes["y"], ds.sizes["x"]),
-                transform=ds.rio.transform(),
-                invert=True,         
-                all_touched=True,
-            )
-            return ds.where(mask)
+            masked_ds = ds.rio.clip([polygon], ds.rio.crs, all_touched=True, drop=False)
+        
+            return masked_ds
         except Exception:
             # fallback: do nothing (or you can implement a manual mask if you add lon/lat coords)
             return ds
