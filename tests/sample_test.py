@@ -33,9 +33,8 @@ def test_dependencies_installed(package_name):
 def test_local_package_import():
     """
     Verifies 'pip install -e .' worked.
-    Replace 'your_package_module' with the actual name of your folder.
     """
     try:
-        import your_package_module
+        import pyrocb
     except ImportError:
         pytest.fail("Local package not found. Check if 'pip install -e .' ran in CI.")
