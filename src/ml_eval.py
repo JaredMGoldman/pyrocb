@@ -1,21 +1,27 @@
+from concurrent.futures import ProcessPoolExecutor, as_completed
 import numpy as np
 import matplotlib.pyplot as plt
+import multiprocessing as mp
 import os
 import pandas as pd
 
+from quantile_forest import RandomForestQuantileRegressor
 from sklearn.base import clone
 from sklearn.metrics import mean_squared_error, r2_score
 from sklearn.utils import resample
-from quantile_forest import RandomForestQuantileRegressor
+
+from tqdm import tqdm
+
 from utils.utils import PLOTS_DIR
 
-def plot_importances(model, exp_name, out_dir):
+def plot_importances(model, exp_name, out_dir, feature_names):
     importance = None
+    
     if not 'feature_importances_' in dir(model):
         importance = np.abs(model.coef_)
     else:
         importance = model.feature_importances_
-    feature_names = model.feature_names_in_
+        
     df = pd.DataFrame({
         "feature": feature_names,
         "importance": importance
@@ -34,8 +40,8 @@ def plot_importances(model, exp_name, out_dir):
     print(f"saved to {out_dir}/{exp_name}_feature_importances.png")
 
 def plot_correlation(model, training_data, testing_data, exp_name = 'regression',  
-                    target = "rave_FRP_MEAN", stratify_by = 'n_days', drop_vars = [],
-                    out_dir = PLOTS_DIR):
+                    target = "rave_FRP_MEAN", stratify_by = 'n_days',
+                    out_dir = PLOTS_DIR, feature_names = []):
     X_train, y_train = training_data
     X_test, y_test = testing_data
 
@@ -45,9 +51,8 @@ def plot_correlation(model, training_data, testing_data, exp_name = 'regression'
         X_test = X_test.reset_index()
         y_test = y_test.reset_index()
 
-    drop_vars.append('index')
-    train_pred = model.predict(X_train.drop(drop_vars, axis = 1))
-    test_pred = model.predict(X_test.drop(drop_vars, axis = 1))
+    train_pred = model.predict(X_train[feature_names])
+    test_pred = model.predict(X_test[feature_names])
 
     bucket_stats = {str(bucket) : {'train_rmse' : 0 ,
                                     'test_rmse' : 0,
@@ -62,7 +67,8 @@ def plot_correlation(model, training_data, testing_data, exp_name = 'regression'
 
         bucket_stats[str(bucket)]['train_rmse'] = np.sqrt(mean_squared_error(y_train_bkt, train_pred_bkt))
         bucket_stats[str(bucket)]['train_ci'] = bootstrap_intervals(model, X_train.iloc[bucket_locs], y_train_bkt, 
-                                                                      X_test.loc[X_test[stratify_by] == bucket])
+                                                                      X_test.loc[X_test[stratify_by] == bucket], 
+                                                                      feature_names = feature_names)
         bucket_stats[str(bucket)]['train_r2'] = r2_score(y_train_bkt, train_pred_bkt)
 
     for bucket in np.unique(X_test[stratify_by]):
@@ -116,27 +122,56 @@ def plot_correlation(model, training_data, testing_data, exp_name = 'regression'
     plt.close()
     print(f"r2 stats saved to {out_dir}/{exp_name}_r2.png")
 
-def bootstrap_intervals(model, X_train, y_train, X_test, n_iterations=1000):
+def _bootstrap_worker(model, X, y, feature_names, X_test):
+    """
+    Worker function: Handles a single bootstrap iteration.
+    Cloning inside the worker ensures a clean state for every process.
+    """
+    this_model = clone(model)
+    
+    # Resample the data
+    X_resample, y_resample = resample(X[feature_names], y)
+    
+    # Fit and Predict
+    this_model.fit(X_resample, y_resample)
+    pred_mean = np.mean(this_model.predict(X_test[feature_names]))
+    
+    return pred_mean
+
+def run_parallel_bootstrap(model, X_train, y_train, X_test, feature_names, n_iterations=1000, max_workers=None):
+    # Use 'spawn' to avoid issues with library locks (like OpenBLAS/MKL)
+    ctx = mp.get_context('spawn')
+    
+    results = []
+    
+    # Use ProcessPoolExecutor for CPU-bound tasks (model fitting)
+    with ProcessPoolExecutor(max_workers=max_workers, mp_context=ctx) as executor:
+        # Submit all tasks
+        futures = [
+            executor.submit(_bootstrap_worker, model, X_train, y_train, feature_names, X_test) 
+            for _ in range(n_iterations)
+        ]
+        
+        # Collect results as they complete
+        for future in tqdm(as_completed(futures), total = len(futures), desc = "bootrapping model in parallel"):
+            results.append(future.result())
+            
+    return np.array(results)
+
+def bootstrap_intervals(model, X_train, y_train, X_test, n_iterations=1000, feature_names = [], max_workers = 40):
     all_preds = []
     if len(X_test) == 0:
         return 0
+
     if type(model) is RandomForestQuantileRegressor:
-        X_test = X_test.drop(['n_days', 'idx', 'index'], axis = 1)
+        X_test = X_test[feature_names]
         intervals = model.predict(X_test, quantiles=[0.025, 0.5, 0.975])
 
         lower_val = intervals[:, 0]
         upper_val = intervals[:, 2]
         return np.mean(upper_val - lower_val)
     
-    for _ in range(n_iterations):
-        this_model = clone(model)
-        X_resample, y_resample = resample(X_train, y_train)
-        
-        this_model.fit(X_resample, y_resample)
-        
-        all_preds.append(np.mean(this_model.predict(X_test)))
-    
-    all_preds = np.array(all_preds)
+    all_preds = run_parallel_bootstrap(model, X_train, y_train, X_test, feature_names, n_iterations, max_workers)
     
     lower_bound = np.percentile(all_preds, 2.5, axis=0)
     upper_bound = np.percentile(all_preds, 97.5, axis=0)

@@ -4,10 +4,12 @@ from utils.constants import *
 
 import numpy as np
 import os
+import pandas as pd
 from joblib import dump, load
 from pathlib import Path
 from shapely.geometry import Polygon
 import time
+from typing import Tuple
 import re
 import matplotlib.pyplot as plt
 import rasterio
@@ -91,28 +93,80 @@ def save_plot(
 
 def save_model(
     model,
+    save_dir: str,
     name: str,
     fmt: str = "joblib",
-    add_timestamp: bool = True,
+    add_timestamp: bool = False,
 ) -> Path:
     """
-    Save the current sklearn model to <repo_root>/<subdir>/<name>.<fmt>.
+    Save the current model to <repo_root>/<subdir>/<name>.<fmt>.
     Returns the saved path.
-    """
-    model_dir = get_dir(subdir=MODELS_DIR)
-    base = slugify(name)
+    """ 
 
     if add_timestamp:
-        base = f"{base}_{time.strftime('%Y%m%d-%H%M')}"
+        name = f"{name}_{time.strftime('%Y%m%d-%H%M')}"
 
-    path = model_dir / f"{base}.{fmt}"
+    path = f"{save_dir}/{name}.{fmt}"
 
     dump(model, path)
     print(f"model saved to {path}")
     return path
 
-def load_model(fname):
-    path = os.path.join(MODELS_DIR, f"{fname}.joblib")
+def save_feature_names(feat_list: list, out_dir: str, exp_name: str):
+    """
+    saves the list of features for a model to the given directory or the endlosing directory if a
+    filename is provided
+
+    :param feat_list: list to save
+    :param out_dir: directory to save list to
+    :param exp_name: name of experiment to label list
+    """
+    if os.path.isfile(out_dir):
+        out_dir = os.path.dirname(out_dir)
+    path = os.path.join(out_dir, f"{exp_name}_features.txt")
+    with open(path, 'w') as f:
+        for item in feat_list:
+            f.write(f"{item}\n")
+    return path
+
+def load_feature_names(path: str):
+    if not os.path.isfile(path):
+        raise FileNotFoundError(f"features file {path} not found")
+    with open(path, 'r') as f:
+        out_list = [line.strip() for line in f]
+    return out_list
+
+def save_features(X_train: pd.DataFrame, y_train: pd.DataFrame, 
+                  X_test: pd.DataFrame, y_test: pd.DataFrame, 
+                  out_dir: str, exp_name: str) -> str: 
+    """
+    saves the features for a model run at the location provided
+
+    :param X_train: training features dataframe
+    :param y_train: training labels dataframe
+    :param X_test: testing features dataframe
+    :param y_test: testing labels dataframe
+    :param out_dir: directory to save list to
+    :param exp_name: name of experiment to label list
+    """
+    if os.path.isfile(out_dir):
+        out_dir = os.path.dirname(out_dir)
+
+    [df.to_csv(os.path.join(out_dir, fname), index = False) for df, fname in 
+        zip([X_train, y_train, X_test, y_test],
+            [f"train_data_{exp_name}.csv", f"train_labels_{exp_name}.csv", 
+                f"test_data_{exp_name}.csv", f"test_labels_{exp_name}.csv"])]
+    return out_dir
+
+def load_features(dir_name, exp_name: str) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    X_train = pd.read_csv(f"{dir_name}/train_data_{exp_name}.csv")
+    y_train = pd.read_csv(f"{dir_name}/train_labels_{exp_name}.csv")
+    X_test = pd.read_csv(f"{dir_name}/test_data_{exp_name}.csv")
+    y_test = pd.read_csv(f"{dir_name}/test_labels_{exp_name}.csv")
+    return X_train, y_train, X_test, y_test
+
+def load_model(fname, fmt = "joblib"):
+    path = f"{fname}.{fmt}"
     return load(path)
 
 def add_lonlat_coords(ds):
