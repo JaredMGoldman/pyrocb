@@ -14,7 +14,7 @@ all_features = ["esi_DFPPM", "modis_MaxFRP","rave_FRP_MEAN","rave_FRP_SD",
 def process_features(features_csv, seed = 42, target_name = 'rave_FRP_MEAN', 
                     train_split = 0.8, stratify_by = 'n_days', 
                     lookback_days = 1, idx_name = 'cp', end_pad = 1,
-                    pred_growth = True, pred_days = 1):
+                    pred_growth = True, pred_days = 1, keep_dtime = False):
     rng = np.random.default_rng(seed)
     df = pd.read_csv(features_csv)
     good_cps = []
@@ -61,7 +61,8 @@ def process_features(features_csv, seed = 42, target_name = 'rave_FRP_MEAN',
                                                     target_name = target_name, train_split = train_split,
                                                     stratify_by = stratify_by, lookback_days = lookback_days,
                                                     idx_name = idx_name, end_pad = end_pad,
-                                                    pred_growth = pred_growth, pred_days = pred_days)
+                                                    pred_growth = pred_growth, pred_days = pred_days,
+                                                    keep_dtime = keep_dtime)
     print("completed data processing")
     return train_X, train_y, test_X, test_y
 
@@ -81,7 +82,7 @@ def filter_outliers(df, idx_col = 'cp', z_thresh = 3,
 def split_data(df, feature_names, target_name = 'rave_FRP_MEAN', 
                     train_split = 0.8, stratify_by = 'n_days', 
                     lookback_days = 1, idx_name = 'cp', end_pad = 1,
-                    pred_growth = True, pred_days = 1):
+                    pred_growth = True, pred_days = 1, keep_dtime = False):
     # split data into train and test subsetted by fire duration
     # data are feature labels for previous two days (yesterday and today)
     train_idx = []
@@ -107,6 +108,8 @@ def split_data(df, feature_names, target_name = 'rave_FRP_MEAN',
                 label = np.squeeze(this_data[this_data.day == days[day_i+pred_days]][target_name]) - np.squeeze(this_data[this_data.day == days[day_i]][target_name])
             else:
                 label = np.squeeze(this_data[this_data.day == days[day_i+pred_days]][target_name])
+            if keep_dtime:
+                day_dict["day"] = np.squeeze(days[day_i+pred_days])
             if idx in train_idx:
                 train_data.append(day_dict)
                 train_labels.append({target_name : label})
