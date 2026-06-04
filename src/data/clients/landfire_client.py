@@ -249,9 +249,10 @@ class LANDFIREClient(BaseClient):
             raise FileNotFoundError(f"No GeoTIFFs found in {extracted_dir}")
 
         data_vars = {}
-        band_names = da.long_name
         for tif in tifs:
             da = rioxarray.open_rasterio(tif)  # dims: band, y, x
+            band_names = da.long_name
+
             # best effort variable naming:
             # If multi-band, name bands as <stem>_b{n}; otherwise just <stem>.
             if "band" in da.dims and da.sizes.get("band", 1) > 1:
