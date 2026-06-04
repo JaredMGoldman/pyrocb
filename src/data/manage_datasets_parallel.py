@@ -4,7 +4,7 @@ from utils.logging_utils import start_log_listener, init_worker_logging
 from data.parallel_utils import varname_map, remove_invalid_idxs
 from data.specs import client_query_specs, hrrr_headers
 from data.dataset_worker import compute_daily_features_for_fire
-from utils.io_utils import FEATURE_OUTPUT_DIR, DATA_DIR, LOG_DIR
+from utils.io_utils import FEATURE_OUTPUT_DIR, DATA_BASE, LOG_DIR
 
 import argparse
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -28,9 +28,9 @@ parser.add_argument('-o', '--out', type = str, dest = 'o',
                     default = "average_polygon_features_parallel.csv",
                     help = f"path to output file relative to {FEATURE_OUTPUT_DIR}")
 parser.add_argument('-c', '--cp', type = str, dest = 'c', default = "cp_na.csv",
-                    help = f"path to `cp_na.csv` file with fire information relative to {DATA_DIR}")
+                    help = f"path to `cp_na.csv` file with fire information relative to {DATA_BASE}")
 parser.add_argument('-p', '--poly', type = str, dest = 'p', default = "cp_poly.gpkg",
-                    help = f"path to `cp_poly.gpkg` file with fire polygon information relative to {DATA_DIR}")
+                    help = f"path to `cp_poly.gpkg` file with fire polygon information relative to {DATA_BASE}")
 parser.add_argument('-w', '--num_workers', type = int, dest = 'num_workers', default = 8,
                     help = "maximum number of workers to use")
 parser.add_argument('-f', '--flush_n_fires', type = int, dest = 'flush_n_fires', default = 50,
@@ -207,9 +207,9 @@ def main(cp: pd.DataFrame,
 if __name__ == "__main__":
     args = parser.parse_args()
     
-    main(cp            = pd.read_csv(os.path.join(DATA_DIR, args.c)), 
+    main(cp            = pd.read_csv(os.path.join(DATA_BASE, args.c)), 
          feature_file  = os.path.join(FEATURE_OUTPUT_DIR, args.o), 
-         cp_poly       = gpd.read_file(os.path.join(DATA_DIR, args.p)),
+         cp_poly       = gpd.read_file(os.path.join(DATA_BASE, args.p)),
          flush_fires   = args.flush_n_fires,
          max_workers   = args.num_workers,
          DEBUG_MODE    = args.debug,

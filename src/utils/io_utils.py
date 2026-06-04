@@ -194,6 +194,7 @@ def add_lonlat_coords(ds):
         latitude=(("y","x"), lat)
     )
 
+
 def buffer_polygon_meters(
     geom: Polygon,
     resolution_m: float,
@@ -204,29 +205,25 @@ def buffer_polygon_meters(
 ) -> Polygon:
     """
     Buffer a lon/lat (EPSG:4326) Polygon/MultiPolygon by (factor * resolution_m) meters.
-
-    Parameters
-    ----------
-    geom : shapely Polygon or MultiPolygon
-        Geometry in EPSG:4326 (lon/lat degrees).
-    resolution_m : float
-        Dataset resolution in meters (e.g., 3000 for 3km grid).
-    factor : float
-        Multiply resolution_m by this factor for the buffer distance.
-        - Use 0.5 to include points whose *centers* are within half a cell of the polygon boundary.
-        - Use 1.0 to be more conservative (include full-cell neighborhood).
-    cap_style : int
-        1=round, 2=flat, 3=square (shapely buffer cap style).
-    join_style : int
-        1=round, 2=mitre, 3=bevel (shapely buffer join style).
-
-    Returns
-    -------
-    shapely geometry
-        Buffered geometry back in EPSG:4326.
     """
     if geom.is_empty:
         return geom
+
+    # --- CRITICAL ENVIRONMENT PATCH ---
+    # If pyproj loses its database context, locate it dynamically from the Conda active environment
+    try:
+        pyproj.CRS.from_epsg(4326)
+    except pyproj.exceptions.CRSError:
+        # Check if we are running inside a Conda environment and manually point to proj.db
+        conda_prefix = os.environ.get("CONDA_PREFIX")
+        if conda_prefix:
+            proj_data_path = os.path.join(conda_prefix, "share", "proj")
+            if os.path.exists(proj_data_path):
+                os.environ["PROJ_DATA"] = proj_data_path  # Modern pyproj environment key
+                os.environ["PROJ_LIB"] = proj_data_path   # Legacy PROJ backup key
+                # Force pyproj to refresh its database context paths natively
+                pyproj.datadir.set_data_dir(proj_data_path)
+    # ----------------------------------
 
     dist_m = float(resolution_m) * float(factor)
 
@@ -235,9 +232,15 @@ def buffer_polygon_meters(
     zone = int((lon0 + 180) // 6) + 1
     epsg = 32600 + zone if lat0 >= 0 else 32700 + zone  # WGS84 UTM north/south
 
-    # Project to meters, buffer, project back
-    to_utm = pyproj.Transformer.from_crs("EPSG:4326", f"EPSG:{epsg}", always_xy=True).transform
-    to_ll  = pyproj.Transformer.from_crs(f"EPSG:{epsg}", "EPSG:4326", always_xy=True).transform
+    # Force float values cleanly to a pure integer
+    clean_epsg = int(float(epsg))
+
+    # Passing PyProj CRS objects directly is cleaner and much faster than string interpolation
+    crs_wgs84 = pyproj.CRS.from_epsg(4326)
+    crs_utm = pyproj.CRS.from_epsg(clean_epsg)
+
+    to_utm = pyproj.Transformer.from_crs(crs_wgs84, crs_utm, always_xy=True).transform
+    to_ll  = pyproj.Transformer.from_crs(crs_utm, crs_wgs84, always_xy=True).transform
 
     geom_utm = transform(to_utm, geom)
     geom_buf_utm = geom_utm.buffer(dist_m, cap_style=cap_style, join_style=join_style)

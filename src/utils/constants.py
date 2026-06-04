@@ -27,12 +27,16 @@ dry_run_date = "09-08-2024"
 dry_run_map = {cp: name for cp, name in zip(dry_run_cps, dry_run_names)}
 
 
+DATA_BASE = os.path.join("/data",f"{os.environ['USER']}")
+if not os.path.exists(DATA_BASE):
+    print(f"created personal data directory at {DATA_BASE}")
+    os.makedirs(DATA_BASE)
+
 DATA_DIR = os.path.join(get_repo_root(), "src", "data")
-CP_POLY_PATH = os.path.join(DATA_DIR,"cp_poly.gpkg")
-CP_IDX_PATH = os.path.join(DATA_DIR,"cp_na.csv")
+CP_POLY_PATH = os.path.join(DATA_BASE,"cp_poly.gpkg")
+CP_IDX_PATH = os.path.join(DATA_BASE,"cp_na.csv")
 
 CLIENTS_DIR = os.path.join(DATA_DIR,"clients")
-DATA_BASE = os.path.join("/data","jaredgoldman")
 CACHE_BASE_DIR = Path("/data/jaredgoldman/cache") # Path(f"{os.environ.get('SCRATCH')}/data/cache")
 RAVE_CACHE = Path("/data/jaredgoldman/RAVE")
 

@@ -2,7 +2,7 @@ import numpy as np
 import os
 import pandas as pd
 import geopandas as gpd
-from utils.io_utils import FEATURE_OUTPUT_DIR, DATA_DIR, PLOTS_DIR
+from utils.io_utils import FEATURE_OUTPUT_DIR, CP_POLY_PATH, PLOTS_DIR
 from eofs.standard import Eof
 import matplotlib.pyplot as plt
 import cartopy.crs as ccrs
@@ -122,7 +122,7 @@ if __name__ == "__main__":
 
     data_path = os.path.join(FEATURE_OUTPUT_DIR, data_fname)
     df = pd.read_csv(data_path)
-    gdf = gpd.read_file(os.path.join(DATA_DIR, "cp_poly.gpkg"))
+    gdf = gpd.read_file(CP_POLY_PATH)
 
     merged_gdf = gdf.join(df.set_index('cp'),on = 'cp',how = 'inner',rsuffix='gdf')
     merged_gdf['day'] = pd.to_datetime(merged_gdf['day'], format = 'mixed')

@@ -23,8 +23,8 @@ from utils.io_utils import save_model, load_model, \
                         save_feature_names, load_feature_names
 from utils.constants import FEATURE_OUTPUT_DIR, PLOTS_DIR, MODELS_DIR, dry_run_cps, dry_run_date
 from utils.feature_creation import process_features, sample_weights
-from ml_eval import plot_importances, plot_correlation
-from fire_comparison import plot_model_results, dry_run_results   
+from analysis.ml_eval import plot_importances, plot_correlation
+from analysis.fire_comparison import plot_model_results, dry_run_results   
 from models.sequential_rf import SequentialRF 
 from models.simple_rf import SimpleRF 
 from models.simple_dnn import SimpleDNN

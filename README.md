@@ -9,11 +9,22 @@ A library to create features of wildfire Fire radiative Energy (FRE) and Fire Ra
 ### Data Requirements
 Currently uses data from a local server but will be updated to dynamically load datasets.
 
+## Setup 
+### Environment
+```
+conda env create -f environment.yml
+conda activate pyrocb
+python -m pip install -e .
+```
+
+### Downloading Data
+
+
 ## Run Data Science Code
-## Setup
+### Setup
 from root of repo:
 ```
-conda create -n pyrocb -y python=3.10
+conda env create -n pyrocb -y python=3.10
 conda activate pyrocb
 python -m pip install -e . 
 conda install -c conda-forge -y cartopy geopandas pandas numpy scikit-learn scipy eofs

@@ -1,4 +1,4 @@
-from utils.constants import DATA_DIR, FEATURE_OUTPUT_DIR, PLOTS_DIR, CP_POLY_PATH, CP_IDX_PATH, dry_run_cps, dry_run_map
+from utils.constants import FEATURE_OUTPUT_DIR, PLOTS_DIR, CP_POLY_PATH, CP_IDX_PATH, dry_run_cps, dry_run_map
 from utils.feature_creation import process_features
 from utils.io_utils import load_model
 

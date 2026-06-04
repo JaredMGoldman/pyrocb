@@ -54,30 +54,6 @@ class RAVEClient(BaseClient):
     # ----------------------------
     # Public API
     # ----------------------------
-    # def query(self,
-    #     polygon: Geom,
-    #     start: Union[str, pd.Timestamp],
-    #     end: Union[str, pd.Timestamp],
-    #     variables: Optional[Sequence[str]] = None,
-    #     drop_outside: bool = True,
-    #     bbox_first: bool = True,
-    #     prefer_latest_vr: bool = True,
-    #     keep_attrs: bool = True,
-    #     ) -> xr.Dataset:
-    #     try:
-    #         self.logger.debug(f"Starting query {start}-{end}")
-    #         return self._query(
-    #             polygon,
-    #             start,
-    #             end,
-    #             variables,
-    #             drop_outside,
-    #             bbox_first,
-    #             prefer_latest_vr,
-    #             keep_attrs,)
-    #     except Exception as e:
-    #         self._remove_cached_files()
-    #         raise RuntimeError(f"[ERROR] RAVE failed: {e}")
         
     def _query(
         self,
@@ -322,8 +298,8 @@ if __name__ == "__main__":
     import geopandas as gpd
 
     poly = box(-120.0, 36.0, -119.75, 36.25)  # CA-ish box
-    gdf = gpd.read_file(CP_POLY_PATH)
-    poly = gdf[gdf.cp == 36].geometry.values[0]
+    # gdf = gpd.read_file(CP_POLY_PATH)
+    # poly = gdf[gdf.cp == 36].geometry.values[0]
     client = RAVEClient()
     ds = client.query(
         polygon=poly,
@@ -331,7 +307,7 @@ if __name__ == "__main__":
         end="2025-07-30 12:00",
         variables= ["FRP_MEAN", "FRP_SD"],
     )
-
+    import ipdb; ipdb.set_trace()
     print(ds)
     print(ds.time.values[:3])
 
