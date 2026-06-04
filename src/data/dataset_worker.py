@@ -10,7 +10,7 @@ import traceback
 
 from data.parallel_utils import skip_fire, is_conus, safe_buffer, time_bins, varname_map
 from utils.logging_utils import log_cp, set_cp, log_client, set_client, reset_tokens
-from utils.utils import LOG_DIR
+from utils.io_utils import LOG_DIR
 
 def compute_daily_features_for_fire(
     cp_idx,
@@ -20,7 +20,8 @@ def compute_daily_features_for_fire(
     client_query_specs,  # <-- dict/specs, not client instances (see below)
     DEBUG_MODE,
     feature_start_pad="1D",
-    feature_end_pad="1D"
+    feature_end_pad="1D",
+    hourly_bool = True
     ) -> List[Dict[str, Any]]:
     """
     Runs ALL client queries for one fire and returns list of day_dict rows.
@@ -57,11 +58,18 @@ def compute_daily_features_for_fire(
             end=end,
             variables=vars_,
         )
-        dates = time_bins(ds.time.values)
-        day_dict = {date : {} for date in dates.keys()}
-        for date in dates.keys():
+        if hourly_bool:
+            dates = ds.time.values
+            day_dict = {date : {} for date in dates}
+        else:
+            dates = time_bins(ds.time.values)
+            day_dict = {date : {} for date in dates.keys()}
+        for i, date in enumerate(day_dict.keys()):
             # compute mean for each var
-            idx = dates[date]
+            if hourly_bool:
+                idx = i
+            else:
+                idx = dates[date]
             for var_name in ds.data_vars:
                 arr = ds[var_name].isel(time=idx).values
                 day_dict[date][varname_map(name, var_name)] = float(np.nanmean(arr))
@@ -98,7 +106,6 @@ def compute_daily_features_for_fire(
                     os.remove(crash_dir / f"worker_{os.getpid()}.log")
                 except Exception:
                     pass
-
         try:
             logger.info("worker started")
 
@@ -142,22 +149,28 @@ def compute_daily_features_for_fire(
         return []
 
     # --- aggregate per day ---
-    dates = np.array(pd.date_range(fire_tmin - pd.Timedelta(1, "D"),
-                                   fire_tmax + pd.Timedelta(1, "D"))).astype("datetime64[D]")
+    times = np.array(pd.date_range(fire_tmin - pd.Timedelta(1, "D"),
+                                   fire_tmax + pd.Timedelta(1, "D"), freq = '1h'))
 
-    data_per_day: List[Dict[str, Any]] = []
-
-    for date in dates:
-        day_dict: Dict[str, Any] = {"cp": cp_idx, "day": date}
+    data_per_time: List[Dict[str, Any]] = []
+    all_vars = set()
+    for _, stats in ds_list:
+        for _, res in stats.items():
+            var_names = set(res.keys()) 
+            all_vars = all_vars | var_names
+    all_vars = list(all_vars)
+    for time in times:
+        time_dict: Dict[str, Any] = {"cp": cp_idx, "time": time}
+        time_dict.update({var_name : np.nan for var_name in all_vars})
         for _, stats in ds_list:
             # Precompute bins once per dataset
             # Assumes time_bins returns dict {datetime64[D]: indices}
-            for day, results in stats.items(): 
-                if day != date:
+            for stat_time, results in stats.items(): 
+                if stat_time != time:
                     continue
                 # compute mean for each var
                 for var_name, avg in results.items():
-                    day_dict[var_name] = avg
-        data_per_day.append(day_dict)
-    
-    return data_per_day
+                    time_dict[var_name] = avg
+        data_per_time.append(time_dict)
+
+    return data_per_time

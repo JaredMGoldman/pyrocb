@@ -2,7 +2,7 @@ import numpy as np
 import os
 import pandas as pd
 import geopandas as gpd
-from utils.utils import FEATURE_OUTPUT_DIR, DATA_DIR, PLOTS_DIR
+from utils.io_utils import FEATURE_OUTPUT_DIR, DATA_DIR, PLOTS_DIR
 from eofs.standard import Eof
 import matplotlib.pyplot as plt
 import cartopy.crs as ccrs

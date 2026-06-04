@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date
 from pathlib import Path
 from typing import Dict, List, Literal, Optional, Sequence, Tuple, Union
-from utils.utils import EARTHACCESS_KEY_NAME, CLIENTS_DIR, CACHE_BASE_DIR, \
+from utils.io_utils import EARTHACCESS_KEY_NAME, CLIENTS_DIR, CACHE_BASE_DIR, \
                     buffer_polygon_meters, make_cache_dir
 
 import os

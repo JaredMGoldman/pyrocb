@@ -14,12 +14,14 @@ import geopandas as gpd
 from shapely.geometry import Polygon, MultiPolygon
 from shapely.ops import unary_union
 
+from data.clients.base_client import BaseClient
+
 
 GeometryLike = Union[Polygon, MultiPolygon]
 
 
 @dataclass
-class GridMETClient:
+class GridMETClient(BaseClient):
     """
     Query NW Knowledge 'metdata/data/permanent/YYYY/' daily GridMET netCDFs
     and return a GeoDataFrame for all grid cells intersecting a polygon.
@@ -37,7 +39,7 @@ class GridMETClient:
     # ----------------------------
     # Public API
     # ----------------------------
-    def query(
+    def _query(
         self,
         polygon: GeometryLike,
         start: Union[str, date, pd.Timestamp],

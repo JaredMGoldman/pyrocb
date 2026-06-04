@@ -12,7 +12,7 @@ from sklearn.utils import resample
 
 from tqdm import tqdm
 
-from utils.utils import PLOTS_DIR
+from utils.io_utils import PLOTS_DIR
 
 def plot_importances(model, exp_name, out_dir, feature_names):
     importance = None
@@ -53,7 +53,7 @@ def plot_correlation(model, training_data, testing_data, exp_name = 'regression'
 
     train_pred = model.predict(X_train[feature_names])
     test_pred = model.predict(X_test[feature_names])
-
+    import ipdb; ipdb.set_trace()
     bucket_stats = {str(bucket) : {'train_rmse' : 0 ,
                                     'test_rmse' : 0,
                                     'train_r2' : 0,
@@ -121,6 +121,10 @@ def plot_correlation(model, training_data, testing_data, exp_name = 'regression'
     plt.savefig(f"{out_dir}/{exp_name}_r2.png")
     plt.close()
     print(f"r2 stats saved to {out_dir}/{exp_name}_r2.png")
+
+    return bucket_stats
+
+
 
 def _bootstrap_worker(model, X, y, feature_names, X_test):
     """

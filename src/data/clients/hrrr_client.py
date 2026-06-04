@@ -12,7 +12,7 @@ from shapely.geometry import Polygon, MultiPolygon, Point
 
 from herbie import Herbie
 
-from utils.utils import buffer_polygon_meters, CACHE_BASE_DIR
+from utils.io_utils import buffer_polygon_meters, CACHE_BASE_DIR
 from data.clients.base_client import BaseClient
 
 Geom = Union[Polygon, MultiPolygon]
@@ -28,15 +28,15 @@ class HRRRClient(BaseClient):
     product: str = "sfc"
     fxx: int = 0
     model: str = "hrrr"
-    freq: Freq = "6H"
+    freq: Freq = "4h"
     remove_grib: bool = True
     n_jobs: int = 4
 
     # IFS fallback config
     region_mode: RegionMode = "auto"
     ifs_model: str = "ifs"
-    ifs_product: str = "oper"
-    ifs_init_freq: str = "12H"  # IFS oper runs at 00z & 12z
+    ifs_product: str = "enfo"
+    ifs_init_freq: str = "6h"  # IFS oper runs at 00z & 12z
 
     # CONUS bbox heuristic (lon/lat)
     conus_bbox: Tuple[float, float, float, float] = (-125.0, 24.0, -66.0, 50.0)
@@ -72,33 +72,33 @@ class HRRRClient(BaseClient):
         # IFS fallback
         # Use 12-hourly init times; Herbie will fetch grib for each init+fxx
         # (Your fxx still applies.)
-        times = pd.date_range(start=start_ts.floor("12H"), end=end_ts.ceil("12H"), freq=self.ifs_init_freq)
+        times = pd.date_range(start=start_ts.floor("12h"), end=end_ts.ceil("12h"), freq=self.ifs_init_freq)
 
         return self.ifs_model, self.ifs_product, 9000, times
     
-    def query(
-        self,
-        polygon: Geom,
-        start: Union[str, pd.Timestamp],
-        end: Union[str, pd.Timestamp],
-        variables: Sequence[str],
-        *,
-        bbox_first: bool = True,
-        time_dim: str = "time",
-    ) -> xr.Dataset:
-        try:
-            out = self._query(  polygon = polygon,
-                                start = start,
-                                end = end,
-                                variables = variables,
-                                bbox_first = bbox_first,
-                                time_dim = time_dim).load()
-            self._remove_cached_files()
-            return out
-        except Exception as e:
-            self._remove_cached_files()
-            self.logger.error(f"HRRR failed with expection {e}")
-            raise RuntimeError(f"[ERROR] HRRR failed with expection {e}")
+    # def query(
+    #     self,
+    #     polygon: Geom,
+    #     start: Union[str, pd.Timestamp],
+    #     end: Union[str, pd.Timestamp],
+    #     variables: Sequence[str],
+    #     *,
+    #     bbox_first: bool = True,
+    #     time_dim: str = "time",
+    # ) -> xr.Dataset:
+    #     try:
+    #         out = self._query(  polygon = polygon,
+    #                             start = start,
+    #                             end = end,
+    #                             variables = variables,
+    #                             bbox_first = bbox_first,
+    #                             time_dim = time_dim).load()
+    #         self._remove_cached_files()
+    #         return out
+    #     except Exception as e:
+    #         self._remove_cached_files()
+    #         self.logger.error(f"HRRR failed with expection {e}")
+    #         raise RuntimeError(f"[ERROR] HRRR failed with expection {e}")
 
     def _query(
         self,
@@ -153,6 +153,7 @@ class HRRRClient(BaseClient):
 
             dses.append(self.combine_dses(H.xarray(search, remove_grib=self.remove_grib), polygon, time_dim))
             self.index_fps.append(H.get_localIndexFilePath())
+            del H
         return xr.merge(dses, join = 'outer')
     
     def _find_lat_lon_var(self, ds):
@@ -176,8 +177,9 @@ class HRRRClient(BaseClient):
             coords_to_rm = [coord for coord in drop_coords if coord in ds._coord_names]
             new_ds = ds.drop_vars(coords_to_rm)
             dses.append(new_ds)
-            
-        return xr.merge(dses, join = 'outer', compat = 'override')
+        ds = xr.merge(dses, join = 'outer', compat = 'override')
+        ds_out = ds.mean(dim = [d for d in ds.dims if d != 'time'] )     
+        return ds_out
 
     @staticmethod
     def _build_search_string(variables: Sequence[str]) -> str:
@@ -283,7 +285,7 @@ if __name__ == "__main__":
 
     la_poly = box(-119.05, 33.60, -117.50, 34.85)
 
-    client = HRRRClient(product="sfc", fxx=0, n_jobs=6)
+    client = HRRRClient()
 
     # ds_us = client.query(
     #     polygon=la_poly,
@@ -300,20 +302,28 @@ if __name__ == "__main__":
 
     # Outside CONUS -> should auto-switch to IFS oper
     central_canada_poly = box(-105.5, 52.5, -104.0, 54.0)  # Mediterranean-ish
-    vars = [
+    vars_ifs = [
         ":tp:",
-        ":u:1000",
-        ":v:1000",
-        ":r:",
+        ":r:1000",
+        ":10u:",
+        ":10v:",
         ":2t:",
-        ":sd:",
-        ":ssw:",
         ":2d:",
     ]
+    vars_hrrr = [
+        ":TMP:2 m",
+        ":DPT:2 m",
+        ":UGRD:10 m",
+        ":VGRD:10 m",
+        ":RH:2 m",
+        ":APCP:"
+    ]
+    
     ds_ocean = client.query(
-        polygon=central_canada_poly,
+        polygon=la_poly,
         start="2025-07-01 00:00",
         end="2025-07-01 12:00",
-        variables=vars,
+        variables=vars_hrrr,
     )
+    import ipdb; ipdb.set_trace()
     print(ds_ocean)

@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date
 from io import StringIO
 from typing import Dict, List, Literal, Optional, Sequence, Tuple, Union
-from utils.utils import FIRMS_KEY_FNAME, CLIENTS_DIR, set_env_var, buffer_polygon_meters
+from utils.io_utils import FIRMS_KEY_FNAME, CLIENTS_DIR, set_env_var, buffer_polygon_meters
 # 375m accuracy
 
 import os
@@ -53,7 +53,7 @@ class FirmsClient:
     # -------------------------
     # Public API (xarray)
     # -------------------------
-    def query(
+    def _query(
         self,
         polygon: Geom,
         start: Union[str, date, pd.Timestamp],

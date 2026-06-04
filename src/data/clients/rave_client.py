@@ -15,15 +15,16 @@ from shapely.geometry import Polygon, MultiPolygon, Point
 from shapely import points, contains
 import shutil
 
-from utils.utils import buffer_polygon_meters, CACHE_BASE_DIR
+from utils.io_utils import buffer_polygon_meters 
+from utils.constants import CACHE_BASE_DIR, RAVE_CACHE
 from utils.rio_utils import open_netcdf_safe_cached
 from data.clients.base_client import BaseClient
 
 Geom = Union[Polygon, MultiPolygon]
 
 cached_file_lb = pd.Timestamp("07-01-2019")
-cached_file_ub = pd.Timestamp("12-31-2023")
-cached_file_base = "/home/jaredgoldman/data/RAVE" # "/u/scratch/j/jgoldman/data/RAVE"
+cached_file_ub = pd.Timestamp("09-30-2024")
+cached_file_base = RAVE_CACHE # "/home/jaredgoldman/data/RAVE", "/u/scratch/j/jgoldman/data/RAVE"
 
 @dataclass
 class RAVEClient(BaseClient):
@@ -35,7 +36,7 @@ class RAVEClient(BaseClient):
       - returns xr.Dataset concatenated over time
     """
     base_url: str = "http://www.ospo.noaa.gov/pub/Blended/RAVE/RAVE-HrlyEmiss-3km"
-    sampling_freq: str = "2H"
+    sampling_freq: str = "2h"
     timeout_s: int = 120
 
     # common coordinate name fallbacks
@@ -53,30 +54,30 @@ class RAVEClient(BaseClient):
     # ----------------------------
     # Public API
     # ----------------------------
-    def query(self,
-        polygon: Geom,
-        start: Union[str, pd.Timestamp],
-        end: Union[str, pd.Timestamp],
-        variables: Optional[Sequence[str]] = None,
-        drop_outside: bool = True,
-        bbox_first: bool = True,
-        prefer_latest_vr: bool = True,
-        keep_attrs: bool = True,
-        ) -> xr.Dataset:
-        try:
-            self.logger.debug(f"Starting query {start}-{end}")
-            return self._query(
-                polygon,
-                start,
-                end,
-                variables,
-                drop_outside,
-                bbox_first,
-                prefer_latest_vr,
-                keep_attrs,)
-        except Exception as e:
-            self._remove_cached_files()
-            raise RuntimeError(f"[ERROR] RAVE failed: {e}")
+    # def query(self,
+    #     polygon: Geom,
+    #     start: Union[str, pd.Timestamp],
+    #     end: Union[str, pd.Timestamp],
+    #     variables: Optional[Sequence[str]] = None,
+    #     drop_outside: bool = True,
+    #     bbox_first: bool = True,
+    #     prefer_latest_vr: bool = True,
+    #     keep_attrs: bool = True,
+    #     ) -> xr.Dataset:
+    #     try:
+    #         self.logger.debug(f"Starting query {start}-{end}")
+    #         return self._query(
+    #             polygon,
+    #             start,
+    #             end,
+    #             variables,
+    #             drop_outside,
+    #             bbox_first,
+    #             prefer_latest_vr,
+    #             keep_attrs,)
+    #     except Exception as e:
+    #         self._remove_cached_files()
+    #         raise RuntimeError(f"[ERROR] RAVE failed: {e}")
         
     def _query(
         self,
@@ -152,14 +153,16 @@ class RAVEClient(BaseClient):
             # clip
             ds = self._subset_to_polygon(ds, polygon, drop_outside=drop_outside, bbox_first=bbox_first)
 
+            ds['FRP_SD'] = ds['FRP_SD'] ** 2
+            ds = ds.sum(dim = ('grid_yt', 'grid_xt'))
+            ds['FRP_SD'] = np.sqrt(ds['FRP_SD'])
             dsets.append(ds)
 
         if not dsets:
             raise RuntimeError("No datasets remained after subsetting.")
-        
-        out = xr.merge(dsets).load()
-        self._remove_cached_files()
-        return out
+
+        ds_out = xr.merge(dsets).load()
+        return ds_out
 
     # ----------------------------
     # Listing + parsing
@@ -315,16 +318,18 @@ class RAVEClient(BaseClient):
     
 if __name__ == "__main__":
     from shapely.geometry import box
+    from utils.constants import CP_POLY_PATH
+    import geopandas as gpd
 
     poly = box(-120.0, 36.0, -119.75, 36.25)  # CA-ish box
-
+    gdf = gpd.read_file(CP_POLY_PATH)
+    poly = gdf[gdf.cp == 36].geometry.values[0]
     client = RAVEClient()
-
     ds = client.query(
         polygon=poly,
-        start="2024-10-01 00:00",
-        end="2024-10-01 12:00",
-        variables= ["FRP_MEAN", "FRP_SD", "FRE", "PM25"],
+        start="2025-07-30 00:00",
+        end="2025-07-30 12:00",
+        variables= ["FRP_MEAN", "FRP_SD"],
     )
 
     print(ds)

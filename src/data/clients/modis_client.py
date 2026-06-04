@@ -15,9 +15,9 @@ from utils.rio_utils import open_geotiff_safe
 
 # Optional but recommended for HDF-EOS -> xarray
 import rasterio
-from utils.utils import add_lonlat_coords, buffer_polygon_meters, \
+from utils.io_utils import add_lonlat_coords, buffer_polygon_meters, \
                     CLIENTS_DIR, CACHE_BASE_DIR
-from clients.base_client import BaseClient
+from data.clients.base_client import BaseClient
 import os
 
 
@@ -51,22 +51,22 @@ class MODISClient(BaseClient):
     # -------------------------
     # Public API
     # -------------------------
-    def query(self,
-        polygon: Geom,
-        start: Union[str, date, pd.Timestamp],
-        end: Union[str, date, pd.Timestamp],
-        variables: Sequence[str] = None,
-        prefer_subdatasets_regex: bool = True,
-        drop_outside: bool = True,
-        ) -> xr.Dataset:
-        try:
-            return self._query(
-                polygon, start, end, variables,
-                prefer_subdatasets_regex = prefer_subdatasets_regex, 
-                drop_outside = drop_outside)
-        except Exception as e:
-            self._remove_cached_files()
-            raise RuntimeError(f"[ERROR] MODIS failed: {e}")
+    # def query(self,
+    #     polygon: Geom,
+    #     start: Union[str, date, pd.Timestamp],
+    #     end: Union[str, date, pd.Timestamp],
+    #     variables: Sequence[str] = None,
+    #     prefer_subdatasets_regex: bool = True,
+    #     drop_outside: bool = True,
+    #     ) -> xr.Dataset:
+    #     try:
+    #         return self._query(
+    #             polygon, start, end, variables,
+    #             prefer_subdatasets_regex = prefer_subdatasets_regex, 
+    #             drop_outside = drop_outside)
+    #     except Exception as e:
+    #         self._remove_cached_files()
+    #         raise RuntimeError(f"[ERROR] MODIS failed: {e}")
         
     def _query(
         self,
@@ -153,7 +153,6 @@ class MODISClient(BaseClient):
         
         ds_all = add_lonlat_coords(ds_all).load()
 
-        self._remove_cached_files()
         return ds_all
 
     # -------------------------

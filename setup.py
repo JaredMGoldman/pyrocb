@@ -19,7 +19,6 @@ setup(
         "geopandas",
         "matplotlib",
         "rasterio",
-        "scipy",
-        "opencv"
+        "scipy"
     ]
 )

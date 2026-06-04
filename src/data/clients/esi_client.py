@@ -16,7 +16,7 @@ import rioxarray  # requires rasterio + GDAL
 import geopandas as gpd
 from shapely.geometry import Polygon, MultiPolygon
 
-from utils.utils import CACHE_BASE_DIR, make_cache_dir, buffer_polygon_meters
+from utils.io_utils import CACHE_BASE_DIR, make_cache_dir, buffer_polygon_meters
 from data.clients.base_client import BaseClient
 from utils.rio_utils import validate_tif_download
 import shutil
@@ -47,22 +47,22 @@ class ESIClient(BaseClient):
     # ----------------------------
     # Public API
     # ----------------------------
-    def query(self,
-        polygon: Geom,
-        start: Union[str, date, pd.Timestamp],
-        end: Union[str, date, pd.Timestamp],
-        variables: Sequence[str] = ("DFPPM",),
-        clip: bool = True,
-        drop: bool = True,
-        ) -> xr.Dataset:
-        try:
-            return self._query(
-                polygon, start, end, variables,
-                clip = clip, drop = drop)
-        except Exception as e:
-            self._remove_cached_files()
-            self.logger.error(f"[ERROR] ESI failed: {e}")
-            raise RuntimeError(f"[ERROR] ESI failed: {e}")
+    # def query(self,
+    #     polygon: Geom,
+    #     start: Union[str, date, pd.Timestamp],
+    #     end: Union[str, date, pd.Timestamp],
+    #     variables: Sequence[str] = ("DFPPM",),
+    #     clip: bool = True,
+    #     drop: bool = True,
+    #     ) -> xr.Dataset:
+    #     try:
+    #         return self._query(
+    #             polygon, start, end, variables,
+    #             clip = clip, drop = drop)
+    #     except Exception as e:
+    #         self._remove_cached_files()
+    #         self.logger.error(f"[ERROR] ESI failed: {e}")
+    #         raise RuntimeError(f"[ERROR] ESI failed: {e}")
 
     def _query(
         self,
@@ -123,7 +123,6 @@ class ESIClient(BaseClient):
             raise FileNotFoundError("No datasets were loaded for the requested time range.")
 
         ds = xr.merge(per_time_dsets).load()
-        self._remove_cached_files()
         return ds
 
     # ----------------------------

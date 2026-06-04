@@ -8,6 +8,17 @@ import xarray as xr
 import rioxarray as rxr
 import rasterio
 
+def url_exists(url):
+    try:
+        # We use a timeout so the script doesn't hang indefinitely
+        response = requests.head(url, allow_redirects=True, timeout=5)
+        
+        # Status codes in the 200-399 range generally mean the page exists/is accessible
+        return response.status_code < 400
+    except requests.RequestException:
+        # Any connection error, timeout, or invalid URL will land here
+        return False
+
 def _validate_tif_readable(path: Path) -> None:
     # tiny window read: cheap but catches most truncated/corrupt tiffs
     with rasterio.open(path) as src:
@@ -100,9 +111,9 @@ def open_netcdf_safe_cached(
         # If it can't open, assume corruption/truncation and retry once by deleting
         if type(out_path) is str:
             out_path = Path(out_path)
+        import ipdb; ipdb.set_trace()
         out_path.unlink(missing_ok=True)
         out_path = download_file_safe(url, out_path, session, tries=3)
-
         ds = xr.open_dataset(out_path, engine=engine, **open_kwargs)
         if load:
             ds = ds.load()

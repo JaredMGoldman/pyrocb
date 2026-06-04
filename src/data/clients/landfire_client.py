@@ -15,6 +15,7 @@ import xarray as xr
 # optional but recommended for GeoTIFF -> xarray with CRS/transform
 import rioxarray  # noqa: F401  (needed for .rio accessor)
 
+from data.clients.base_client import BaseClient
 
 try:
     from shapely.geometry import Polygon, MultiPolygon
@@ -25,7 +26,7 @@ Geom = Union["Polygon", "MultiPolygon"]
 
 
 @dataclass
-class LANDFIREClient:
+class LANDFIREClient(BaseClient):
     """
     LANDFIRE Product Service (LFPS) client.
 
@@ -62,7 +63,7 @@ class LANDFIREClient:
     # --------------------------
     # Public API
     # --------------------------
-    def query(
+    def _query(
         self,
         polygon: Geom,
         start: Union[str, pd.Timestamp],

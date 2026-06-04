@@ -4,7 +4,7 @@ from utils.logging_utils import start_log_listener, init_worker_logging
 from data.parallel_utils import varname_map, remove_invalid_idxs
 from data.specs import client_query_specs, hrrr_headers
 from data.dataset_worker import compute_daily_features_for_fire
-from utils.utils import FEATURE_OUTPUT_DIR, DATA_DIR, LOG_DIR
+from utils.io_utils import FEATURE_OUTPUT_DIR, DATA_DIR, LOG_DIR
 
 import argparse
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -12,6 +12,7 @@ from datetime import datetime
 import geopandas as gpd
 import multiprocessing
 import logging
+import numpy as np
 import os
 import pandas as pd
 from pathlib import Path
@@ -64,7 +65,7 @@ def main(cp: pd.DataFrame,
     log_queue, listener = start_log_listener(log_path, level = logging_level)
     logger = logging.getLogger(feature_file.split(os.path.sep)[-1].replace(".csv",""))
     written_header = False
-    all_cps = list(cp[cp['t_min'] + 1 < cp['t_max']].cp.unique())
+    all_cps = list(cp[cp['t_min'] + 2 < cp['t_max']].cp.unique())
     if os.path.exists(feature_file):
         logger.info(f"loading existing file {feature_file}")
         feature_df = pd.read_csv(feature_file)
@@ -72,7 +73,9 @@ def main(cp: pd.DataFrame,
             logger.info("cleaning up features")
             feature_df = remove_invalid_idxs(feature_df, logger)
         processed_cps = feature_df.cp.unique()
-        all_cps = list(set(all_cps) - set(list(processed_cps)))
+        processed_ints = [int(proc_cp) for proc_cp in processed_cps if not np.isnan(proc_cp)]
+        all_ints = [int(proc_cp) for proc_cp in all_cps if not np.isnan(proc_cp)]
+        all_cps = list(set(all_ints) - set(list(processed_ints)))  
         written_header = True
         
     all_fires = len(all_cps)
@@ -89,7 +92,7 @@ def main(cp: pd.DataFrame,
     all_fires = len(cp_ids)
 
     random_cps = sample(cp_ids, all_fires)
-    header = {"cp": [], "day": []}
+    header = {"cp": [],}
     for val in client_query_specs:
         if 'hrrr' in val['name']:
             continue
@@ -172,7 +175,8 @@ def main(cp: pd.DataFrame,
                     rows = f.result()
                 except Exception as e:
                     logger.error(f"failed to load row with exception {e}")
-                    exit()
+                    done_count += 1
+                    continue
                 done_count += 1
 
                 if rows:
