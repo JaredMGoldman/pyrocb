@@ -74,7 +74,7 @@ class BaseClient(ABC):
         self.logger.info(f'cleaning up {self.__class__.__name__} cache')
         shutil.rmtree(self.save_dir)
 
-    def _subset_dataset(self, lat, lon, ds):
+    def _subset_dataset(self, lat, lon, ds, pool_n = None):
         if type(lat) == list:
             lat_min, lat_max = lat
             lon_min, lon_max = lon
@@ -82,6 +82,19 @@ class BaseClient(ABC):
             lat_slice = slice(lat_min, lat_max) if ds.latitude[0] < ds.latitude[-1] else slice(lat_max, lat_min)
             lon_slice = slice(lon_min, lon_max) if ds.longitude[0] < ds.longitude[-1] else slice(lon_max, lon_min)
             target = ds.sel(latitude=lat_slice, longitude=lon_slice)
+            if (not pool_n is None) and (pool_n > 1):
+                # (Matches whether they are named 'latitude'/'longitude' or 'y'/'x')
+                lat_dim = target.latitude.dims[0]
+                lon_dim = target.longitude.dims[0]
+                
+                # boundary='trim' drops any fractional remainder rows/columns at the edge 
+                # if the sliced dimension length isn't perfectly divisible by n.
+                coarsen_dict = {lat_dim: pool_n, lon_dim: pool_n}
+                
+                target = target.coarsen(
+                    coarsen_dict, 
+                    boundary="trim"
+                ).mean()
         else:
             target = ds.sel(latitude=lat, longitude=lon, method="nearest")
         return target

@@ -4,20 +4,18 @@ from data.clients.gfs_client import GFSClient
 from data.clients.gfs_historical_client import GFSHistClient
 from data.clients.rrfs_client import RRFSClient
 from data.clients.ecmwf_client import ECMWFClient
-from utils.constants import PLOTS_DIR, NAM, GFS, ECMWF, RRFS, CACHE_BASE_DIR
+from data.clients.era5_pl_client import ERA5PLClient
+from utils.constants import PLOTS_DIR, NAM, GFS, ECMWF, RRFS, ERA5, CACHE_BASE_DIR
 
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
 import cartopy.io.shapereader as shapereader
-from cartopy.feature import ShapelyFeature
 from cartopy.mpl.path import shapely_to_path
 from datetime import datetime
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
-from matplotlib.path import Path
 import matplotlib.patches as mpatches
-import matplotlib.patches as patches
 from metpy.calc import lcl, dewpoint_from_relative_humidity
 from metpy.units import units
 import multiprocessing as mp
@@ -35,91 +33,6 @@ import xarray as xr
 
 warnings.filterwarnings("ignore")
 
-# def transform_ds_for_parallel(
-#     ds_paths, features=["t", "r", "gh", "u", "v"], target_dim="isobaricInhPa"
-# ):
-#     """Memory-safe transformer that streams large weather datasets into sounding dictionaries
-
-#     without blowing up RAM limits.
-#     """
-#     # 1. Open lazily using Dask chunking over spatial dimensions
-#     # This prevents the dataset from loading into RAM instantly
-#     print("Opening files with lazy spatial chunking...")
-#     ds = xr.open_mfdataset(
-#         ds_paths,
-#         dim="valid_time",
-#         combine="nested",
-#         parallel=True,
-#         chunks={
-#             "latitude": 5,
-#             "longitude": 5,
-#         },  # Keeps memory footprints per chunk tiny
-#         coords="minimal",
-#         compat="override",
-#     )
-
-#     # Core structural dimensions fix
-#     if "valid_time" in ds.coords and "valid_time" not in ds.dims:
-#         ds = (
-#             ds.swap_dims({"time": "valid_time"})
-#             if "time" in ds.dims
-#             else ds.set_index(valid_time="valid_time")
-#         )
-
-#     lat_name = "latitude" if "latitude" in ds.coords else "lat"
-#     lon_name = "longitude" if "longitude" in ds.coords else "lon"
-
-#     # 2. Pull metadata vectors only (lightweight primitives)
-#     time_vector = ds.valid_time.values
-#     level_vector = ds[target_dim].values
-#     lat_vals = ds[lat_name].values
-#     lon_vals = ds[lon_name].values
-
-#     # 3. Handle coordinate matrices
-#     if lat_vals.ndim == 1 and lon_vals.ndim == 1:
-#         lon_2d, lat_2d = np.meshgrid(lon_vals, lat_vals)
-#     else:
-#         lat_2d, lon_2d = lat_vals, lon_vals
-
-#     # 4. Generate the valid physical mask using a fast lazy evaluation
-#     # .compute() is ONLY executed on a single 2D spatial slice to isolate active ocean/land cells
-#     print("Locating valid sounding points...")
-#     spatial_sample = (
-#         ds[features[0]]
-#         .isel(valid_time=0, **{target_dim: 0})
-#         .drop_vars(["valid_time", target_dim], errors="ignore")
-#         .compute()
-#     )
-
-#     y_indices, x_indices = np.where(~np.isnan(spatial_sample.values))
-#     total_points = len(y_indices)
-#     print(f"Identified {total_points} active spatial points to extract.")
-
-#     parallel_ready_payload = {}
-
-#     # 5. Stream the points out sequentially or in small blocks
-#     # By isolating coordinate slices FIRST on the lazy xarray object,
-#     # we only load the exact 1D/2D time-series vectors we need into memory.
-#     for i, (y_idx, x_idx) in enumerate(zip(y_indices, x_indices)):
-#         lat_val = float(lat_2d[y_idx, x_idx])
-#         lon_val = float(lon_2d[y_idx, x_idx])
-#         coord_key = (lat_val, lon_val)
-
-#         point_features = {"time": time_vector, "levels": level_vector}
-
-#         # Select the spatial pixel lazily across all times and levels
-#         # Calling .compute() here ONLY pulls down the data for this singular point grid cell
-#         point_ds = ds.isel(**{lat_name: y_idx, lon_name: x_idx}).compute()
-
-#         for f in features:
-#             point_features[f] = point_ds[f].values
-
-#         parallel_ready_payload[coord_key] = point_features
-
-#         if i % 500 == 0 and i > 0:
-#             print(f"Processed sounding {i}/{total_points}...")
-
-#     return parallel_ready_payload
 
 def transform_ds_for_parallel(ds, features = ['t', 'r', 'gh', 'u', 'v'], 
                               target_dim='isobaricInhPa'):
@@ -127,18 +40,15 @@ def transform_ds_for_parallel(ds, features = ['t', 'r', 'gh', 'u', 'v'],
     Transforms a heavy, lazy xarray dataset into a lightweight, 
     fully-picklable dictionary of raw NumPy arrays optimized for parallel pipelines.
     """
-    # 1. Determine spatial coordinate names dynamically
     lat_name = 'latitude' if 'latitude' in ds.coords else 'lat'
     lon_name = 'longitude' if 'longitude' in ds.coords else 'lon'
     
     lat_coord = ds[lat_name]
     lon_coord = ds[lon_name]
     
-    # 2. Extract shared non-spatial coordinate vectors cleanly as primitives
     time_vector = ds.valid_time.values
     level_vector = ds[target_dim].values
 
-    # 3. Handle Transpose Order - explicitly tracking spatial coordinates
     main_keys = ['valid_time', target_dim]
     if not 'valid_time' in ds.dims:
         ds = ds.expand_dims('valid_time')
@@ -151,7 +61,6 @@ def transform_ds_for_parallel(ds, features = ['t', 'r', 'gh', 'u', 'v'],
     for f in features:
         feature_arrays[f] = ds[f].transpose(*required_order).values
     
-    # 4. Handle Grid Coordinate Geometry Matrix Generation
     if lat_coord.ndim == 1 and lon_coord.ndim == 1:
         # Rectilinear: build explicit 2D coordinate arrays matching the spatial shape
         # np.meshgrid output needs to match data array's spatial axis layout
@@ -435,19 +344,29 @@ def pull_data(date, lat, lon, fxx_range, clients, max_workers):
     dses = []
     with ProcessPoolExecutor(max_workers = max_workers) as ppex:
         futures = []
-        specs = { 'client':  None,'date' : date, 'lat': lat, 
+        specs = { 'client':  None,'date' : pd.to_datetime(date), 'lat': lat, 
                   'lon' : lon, 'fxx': 0}
         tot_futures = 0
         for client in clients:
-            for fxx in range(fxx_range+1):
+            if client == ERA5PLClient:
                 tot_futures += 1
-                specs['fxx'] = fxx
+                specs['fxx'] = list(range(fxx_range))
                 specs['client'] = client
                 futures.append(ppex.submit(query_worker, specs['client'], specs['date'], specs['lat'], specs['lon'], specs['fxx']))
+            else:
+                for fxx in range(fxx_range+1):
+                    tot_futures += 1
+                    specs['fxx'] = fxx
+                    specs['client'] = client
+                    futures.append(ppex.submit(query_worker, specs['client'], specs['date'], specs['lat'], specs['lon'], specs['fxx']))
         for f in tqdm.tqdm(as_completed(futures), total = tot_futures, desc = "downloading data"):
             out = f.result()
             if out is not None:
-                dses.append(out)
+                if out[1] == ERA5:
+                    for fname in out[0]:
+                        dses.append((fname, out[1]))
+                else:
+                    dses.append(out)
     return dses
 
 def process_single_file_to_dict(fname, features, target_dim):
@@ -508,7 +427,8 @@ def group_client_dses(
     for name in client_names:
         files = out_dses[name]
         print(f"Processing {len(files)} files in parallel for client: {name}")
-
+        if name == ERA5:
+            target_dim = 'level'
         # Map files across worker processes to read NetCDF disks concurrently
         with ProcessPoolExecutor() as executor:
             futures = [
@@ -524,17 +444,6 @@ def group_client_dses(
 
     return out_dses
 
-# def group_client_dses(dses, client_names):
-#     out_dses = {name : [] for name in client_names}
-#     base_dir = os.path.join(CACHE_BASE_DIR, 'pft_processing')
-#     os.makedirs(base_dir, exist_ok=True)
-#     for ds, name in dses:
-#         out_dses[name].append(ds)
-#     for name in client_names:
-#         dses = [xr.open_dataset(fname) for fname in out_dses[name]]
-#         ds = xr.concat(dses, dim='valid_time')
-#         out_dses[name] = transform_ds_for_parallel(ds)
-#     return out_dses
 
 def pft_worker(sounding):
     (snd, (key_val, time, name)) = loads(sounding)
@@ -553,27 +462,31 @@ def calc_pfts(soundings, max_workers):
     return pfts
 
 if __name__ == "__main__":
-    max_workers = 48
+    max_workers = 36
     fxx_range = 24
-    clients = [GFSHistClient] #, GFSClient, NAMClient, ECMWFClient]
-    this_time = "2026-05-31 00:00"
-    all_times = []
+    clients = [ERA5PLClient] #, GFSClient, NAMClient, ECMWFClient, GFSHistClient ]
+
+    all_dates = []
     days = ["%02d" % (int(i),) for i in range(1,32)]
-    for year in [f"{i}" for i in range(2015,2020)]:
+    for year in [f"{i}" for i in range(1940,2025)]:
         for month in ["06", "07", "08"]:
             for day in days:
+                if int(day) % 2 == 0:
+                    continue
                 if day == "31" and month == "06":
                     continue
-                this_time = f"{year}-{month}-{day}"
-                all_times.append(this_time)
+                this_date = f"{year}-{month}-{day}"
+                all_dates.append(this_date)
     lat = [24.846565, 71.300793]
     lon = [-166.992188, -52.031250]
     
-    forecast_names = [GFS] #, GFS, NAM, ECMWF]
-    for dtime in tqdm.tqdm(all_times, desc = "all times"):
+    forecast_names = [ERA5] #, GFS, NAM, ECMWF]
+    out_dir_base = os.path.join(PLOTS_DIR, 'pfts', ERA5.lower())
+    failed_dates = []
+    for dtime in tqdm.tqdm(all_dates, desc = "all dates"):
         try:
-            if os.path.exists(os.path.join(PLOTS_DIR, 'pfts', dtime, 'pft_vals.csv')):
-                print(f"already processed: {os.path.join(PLOTS_DIR, 'pfts', dtime, 'pft_vals.csv')}")
+            if os.path.exists(os.path.join(out_dir_base, dtime, 'pft_vals.csv')):
+                print(f"already processed: {os.path.join(out_dir_base, dtime, 'pft_vals.csv')}")
                 continue
             print(f"evaluating time: {dtime}")
             start_time = datetime.now()
@@ -595,11 +508,10 @@ if __name__ == "__main__":
 
             pft_time = datetime.now()
             pft_stopwatch = pft_time - sounding_time
-            print(f"\nfinished pft calculatoin in {pft_stopwatch} secs")
-
+            print(f"\nfinished pft calculation in {pft_stopwatch} secs")
 
             df = parse_to_dataframe(pfts)
-            plot_spatiotemporal_data(df, os.path.join(PLOTS_DIR, 'pfts', dtime))
+            plot_spatiotemporal_data(df, os.path.join(out_dir_base, dtime))
             plot_time = datetime.now()
             plot_stopwatch = plot_time - pft_time
             
@@ -611,5 +523,8 @@ if __name__ == "__main__":
             print(f"| PLOT TIME     | {plot_stopwatch} |")
             print(f"| TOTAL TIME    | {plot_time - start_time} |")
             print("----------------------------------")
-        except:
+        except Exception as e:
+            failed_dates.append(dtime)
+            print(e)
             continue
+    print(f"failed dates:\n{failed_dates}")
