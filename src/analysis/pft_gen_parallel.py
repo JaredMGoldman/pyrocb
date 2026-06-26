@@ -34,11 +34,12 @@ import xarray as xr
 warnings.filterwarnings("ignore")
 
 
-def transform_ds_for_parallel(ds, features = ['t', 'r', 'gh', 'u', 'v'], 
+def transform_ds_for_parallel(ds, features=['t', 'r', 'gh', 'u', 'v'], 
                               target_dim='isobaricInhPa'):
     """
     Transforms a heavy, lazy xarray dataset into a lightweight, 
     fully-picklable dictionary of raw NumPy arrays optimized for parallel pipelines.
+    Supports both standard grid matrices and flattened 1D spatial_point datasets.
     """
     lat_name = 'latitude' if 'latitude' in ds.coords else 'lat'
     lon_name = 'longitude' if 'longitude' in ds.coords else 'lon'
@@ -55,53 +56,78 @@ def transform_ds_for_parallel(ds, features = ['t', 'r', 'gh', 'u', 'v'],
     spatial_dims = [d for d in ds.dims if not d in main_keys]
     required_order = main_keys + spatial_dims
     
-    # Extract data arrays into raw, in-memory NumPy blocks 
-    # Shape layout: (valid_time, isobaricInhPa, Y, X) or (valid_time, isobaricInhPa, lat, lon)
+    # 1. Extract data arrays into raw, in-memory NumPy blocks
     feature_arrays = {}
     for f in features:
         feature_arrays[f] = ds[f].transpose(*required_order).values
     
-    if lat_coord.ndim == 1 and lon_coord.ndim == 1:
-        # Rectilinear: build explicit 2D coordinate arrays matching the spatial shape
-        # np.meshgrid output needs to match data array's spatial axis layout
-        lon_2d, lat_2d = np.meshgrid(lon_coord.values, lat_coord.values)
-        if spatial_dims == [lat_name, lon_name]:
-            lats_matrix, lons_matrix = lat_2d, lon_2d
-        else:
-            lats_matrix, lons_matrix = lat_2d.T, lon_2d.T
-    else:
-        # Curvilinear (e.g. RRFS / NAM Nest): coordinates are already 2D meshes
-        lats_matrix = lat_coord.values
-        lons_matrix = lon_coord.values
+    # Check if we are dealing with a flattened unstructured vector layout
+    is_spatial_point = 'spatial_point' in spatial_dims
 
-    # 5. Locate where the data contains valid physical values to prune out dead NaN margins
-    # Uses the first time slice and first level of your first feature as a template mask
-    spatial_sample = feature_arrays[features[0]][0, 0, :, :]
-    y_indices, x_indices = np.where(~np.isnan(spatial_sample))
-    
-    parallel_ready_payload = {}
-
-    # 6. Build the data payload dictionary
-    for y_idx, x_idx in zip(y_indices, x_indices):
-        lat_val = float(lats_matrix[y_idx, x_idx])
-        lon_val = float(lons_matrix[y_idx, x_idx])
-        coord_key = (lat_val, lon_val)
+    if is_spatial_point:
+        # === HANDLING FOR FLATTENED RECTILINEAR DATA ===
+        # No meshgrid needed! Vectors map 1-to-1 directly with the spatial axis.
+        lats_vector = lat_coord.values
+        lons_vector = lon_coord.values
         
-        # CRITICAL FIX: Instantiate a FRESH dictionary block for every single coordinate pair.
-        # This prevents reference overwriting from destroying upstream data profiles.
-        point_features = {
-            'time': np.array([time_vector]),
-            'levels': level_vector
-        }
+        # Pull a sample slice to locate valid data points (Shape: valid_time, isobaricInhPa, spatial_point)
+        spatial_sample = feature_arrays[features[0]][0, 0, :]
+        valid_indices = np.where(~np.isnan(spatial_sample))[0]
         
-        # Extract the continuous temporal and vertical slice via fast NumPy index slicing
-        # [:, :, y_idx, x_idx] pulls all times and levels for this specific point location
-        for f in features:
-            point_features[f] = feature_arrays[f][:, :, y_idx, x_idx]
+        parallel_ready_payload = {}
+        
+        # Build payload looping through the 1D index
+        for idx in valid_indices:
+            lat_val = float(lats_vector[idx])
+            lon_val = float(lons_vector[idx])
+            coord_key = (lat_val, lon_val)
             
-        parallel_ready_payload[coord_key] = point_features
+            point_features = {
+                'time': np.array([time_vector]),
+                'levels': level_vector
+            }
+            
+            # Extract the temporal and vertical slice using the 1D index channel
+            for f in features:
+                point_features[f] = feature_arrays[f][:, :, idx]
+                
+            parallel_ready_payload[coord_key] = point_features
+            
+        return parallel_ready_payload
 
-    return parallel_ready_payload
+    else:
+        # === LEGACY BACKWARD COMPATIBILITY FOR 2D GRIDS ===
+        if lat_coord.ndim == 1 and lon_coord.ndim == 1:
+            lon_2d, lat_2d = np.meshgrid(lon_coord.values, lat_coord.values)
+            if spatial_dims == [lat_name, lon_name]:
+                lats_matrix, lons_matrix = lat_2d, lon_2d
+            else:
+                lats_matrix, lons_matrix = lat_2d.T, lon_2d.T
+        else:
+            lats_matrix = lat_coord.values
+            lons_matrix = lon_coord.values
+
+        spatial_sample = feature_arrays[features[0]][0, 0, :, :]
+        y_indices, x_indices = np.where(~np.isnan(spatial_sample))
+        
+        parallel_ready_payload = {}
+
+        for y_idx, x_idx in zip(y_indices, x_indices):
+            lat_val = float(lats_matrix[y_idx, x_idx])
+            lon_val = float(lons_matrix[y_idx, x_idx])
+            coord_key = (lat_val, lon_val)
+            
+            point_features = {
+                'time': np.array([time_vector]),
+                'levels': level_vector
+            }
+            
+            for f in features:
+                point_features[f] = feature_arrays[f][:, :, y_idx, x_idx]
+                
+            parallel_ready_payload[coord_key] = point_features
+
+        return parallel_ready_payload
 
 
 def parse_to_dataframe(raw_data):
@@ -340,9 +366,11 @@ def calc_soundings(ds_dict, max_workers):
 def query_worker(client, date, lat, lon, fxx):
     return client().parallel_query(date = date, lat = lat, lon = lon, fxx = fxx)
 
-def pull_data(date, lat, lon, fxx_range, clients, max_workers):
+def pull_data(date, lat, lon, fxx_range, clients, max_workers, fxx_freq = 1):
     dses = []
-    with ProcessPoolExecutor(max_workers = max_workers) as ppex:
+    max_workers_capped = max_workers if max_workers <= 20 else 20
+    print(f"running data pulling with {max_workers_capped} workers")
+    with ProcessPoolExecutor(max_workers_capped) as ppex:
         futures = []
         specs = { 'client':  None,'date' : pd.to_datetime(date), 'lat': lat, 
                   'lon' : lon, 'fxx': 0}
@@ -350,11 +378,11 @@ def pull_data(date, lat, lon, fxx_range, clients, max_workers):
         for client in clients:
             if client == ERA5PLClient:
                 tot_futures += 1
-                specs['fxx'] = list(range(fxx_range))
+                specs['fxx'] = list(range(0, fxx_range, fxx_freq))
                 specs['client'] = client
                 futures.append(ppex.submit(query_worker, specs['client'], specs['date'], specs['lat'], specs['lon'], specs['fxx']))
             else:
-                for fxx in range(fxx_range+1):
+                for fxx in range(0, fxx_range+1, fxx_freq):
                     tot_futures += 1
                     specs['fxx'] = fxx
                     specs['client'] = client
@@ -371,11 +399,18 @@ def pull_data(date, lat, lon, fxx_range, clients, max_workers):
 
 def process_single_file_to_dict(fname, features, target_dim):
     """Opens a single file, extracts its arrays, and returns a raw dictionary."""
-    with xr.open_dataset(fname) as ds:
-        # Pass the single-file dataset into your existing transformation function
-        return transform_ds_for_parallel(
-            ds, features, target_dim
-        )
+    try:
+        with xr.open_dataset(fname) as ds:
+            # Pass the single-file dataset into your existing transformation function
+            out = transform_ds_for_parallel(
+                ds, features, target_dim
+            )
+
+        os.remove(fname)
+        return out
+    except:
+        os.remove(fname)
+        return None
 
 
 def merge_parallel_payloads(payload_list, features):

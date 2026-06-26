@@ -3,18 +3,27 @@ import matplotlib.colors as mcolors
 from datetime import datetime
 import pandas as pd
 
+from analysis.mapping.active_incident_map import ActiveFirePerimeterPipeline
+from analysis.mapping.firms_pft_pipeline import FirmsPftLandmaskedPipeline
+from analysis.mapping.veda_pft_pipeline import VedaPftLandmaskedPipeline
+
 from data.clients.gfs_client import GFSClient, GFS
+from data.clients.rrfs_client import RRFSClient, RRFS
 from utils.constants import CACHE_BASE_DIR
 
 # Network & Server Options
 SERVER_PORT = 8650
+gfs_time = "2026-06-01"
 now_dt = pd.Timestamp(datetime.now())
-now_date = "2026-06-08"
+now_date = f"{now_dt.year}-{now_dt.month}-{now_dt.day}"
 fxx_range = 48
-clients = [GFSClient]
-fx_names = [GFS]
+fxx_freq = 2
+clients =  [RRFSClient]
+fx_names = [RRFS]
+active_fire_class = ActiveFirePerimeterPipeline
+max_workers = 48
 
-max_workers = 10
+cmap_name = 'viridis'
 
 date_str = f"{now_dt.year}{now_dt.month}{now_dt.day}"
 
@@ -34,7 +43,7 @@ TIMEDIMENSION_ASSETS = {
 
 # Spatial Mapping Extents [West Lon, East Lon, South Lat, North Lat]
 MAP_BOUNDS = {
-    'west': -135.0, 'east': -40.0, 'south': 24.0, 'north': 65.0
+    'west': -140.0, 'east': -50.0, 'south': 24.0, 'north': 75.0
 }
 
 bounds = [MAP_BOUNDS["west"], MAP_BOUNDS['east'], MAP_BOUNDS["south"], MAP_BOUNDS['north']]
@@ -52,6 +61,10 @@ VEDA_REGIONS = {
 }
 
 VEDA_BASE_URL = "https://openveda.cloud/api/features"
+
+REMOTE_DIR = "/srv/data/web/data-web/research/inspyre/pft"
+USERNAME = 'jaredgoldman'
+HOSTNAME = 'chaos.atmos.ucla.edu'
 
 # Model Normalization Configurations
 def get_log_norm(vmin, vmax):
