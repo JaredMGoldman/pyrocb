@@ -27,11 +27,12 @@ class RRFSClient(BaseClient):
     def _query_worker(self, date, lat, lon, fxx):
         date_ts = pd.to_datetime(date)
         date_str = date_ts.strftime('%Y%m%d') 
-        time_str = date_ts.strftime('%H')
+        time_str = self._make_n_len_str(date_ts.strftime('%H'),2)
         fxx_str = self._to_cycle_hr(fxx)
         fname = f"rrfs.t{time_str}z.prslev.3km.f{fxx_str}.na.grib2"
         file_path = f"{self.bucket}/{self.base_path}/rrfs.{date_str}/{time_str}/{fname}"
         local_file = os.path.join(self.save_dir, fname)
+
         if os.path.exists(local_file):
             pass
         else:
@@ -144,12 +145,12 @@ class RRFSClient(BaseClient):
         return "%03d" % (int(fxx),)
     
 if __name__ == "__main__":
-    from analysis.mapping.config import lats, lons
+    import analysis.mapping.config as config
 
     client = RRFSClient()
-    this_time = "2026-06-20 00:00"
-    lat = lats #[32, 34.05]
-    lon = lons # [-120, -118.24]
+    lat = config.lats #[32, 34.05]
+    lon = config.lons # [-120, -118.24]
     fxx = 2
+    this_time = config.now_date
     ds = client.query(this_time, lat, lon, fxx)
     import ipdb; ipdb.set_trace()

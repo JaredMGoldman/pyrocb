@@ -6,14 +6,15 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
+import matplotlib.dates as mdates
 from scipy.interpolate import griddata
 import folium
-from folium.plugins import TimeSliderChoropleth
 from shapely.geometry import shape, mapping, Polygon, Point
 import cartopy.io.shapereader as shapereader
 from shapely.ops import unary_union
 
 import analysis.mapping.config as config
+from analysis.mapping.timeslider_choropleth_utc import TimeSliderChoropleth as TimeSliderChoroplethUTC
 
 
 class FireMapBase(ABC):
@@ -251,14 +252,18 @@ class FireMapBase(ABC):
         # Convert index to readable string format if it's datetime
         x_labels = [pd.to_datetime(t).strftime('%m/%d %H:%M') for t in time_series.index]
         
-        ax.plot(x_labels, time_series.values, color='#e74c3c', linewidth=2, marker='o', markersize=4)
+        ax.plot(x_labels, np.log(time_series.values), color='#e74c3c', linewidth=2, marker='o', markersize=4)
         
-        ax.set_title(f"Mean PFT {config.fx_names[0].upper()} Predictions", color='black', fontsize=10, fontweight='bold')
-        ax.set_ylabel("PFT Value", color='black', fontsize=8)
+        ax.set_title(f"PFT {config.fx_names[0].upper()} Prediction", color='black', fontsize=10, fontweight='bold')
+        ax.set_ylabel("log PFT Value (GW)", color='black', fontsize=8)
+        ax.set_yscale('log')
         ax.tick_params(colors='black', labelsize=7)
         ax.grid(True, color='#444444', linestyle='--', alpha=0.5)
         
         # Rotate dates so they don't smash together
+        fig.autofmt_xdate()
+        # ax.xaxis.set_major_locator(mdates.HourLocator(interval=config.plot_freq))
+        # plt.xticks(rotation=30)
         plt.xticks(rotation=30, ha='right')
         plt.tight_layout()
 
@@ -331,14 +336,10 @@ class FireMapBase(ABC):
         for ts in timestamps:
             ts_group = clean_pft[clean_pft['time'] == ts]
             if len(ts_group) < 4: continue
-            ts_dt = pd.to_datetime(ts)
             
-            if ts_dt.tz is None:
-                ts_localized = ts_dt.tz_localize('UTC')
-            else:
-                ts_localized = ts_dt.tz_convert('UTC')
-            
-            unix_sec = str(int(ts_localized.timestamp()))
+            # 1. Keep this as a strict UTC timestamp
+            ts_naive = pd.to_datetime(ts, utc=True).tz_localize(None)
+            unix_sec = str(int(ts_naive.timestamp()))
             
             points = ts_group[['lon', 'lat']].values
             values = ts_group['value'].values
@@ -358,12 +359,15 @@ class FireMapBase(ABC):
                         'opacity': 0.45
                     }
 
-        TimeSliderChoropleth(
+        # 3. Use the frontend date_options trick to force JavaScript to read it as UTC/Zulu
+        TimeSliderChoroplethUTC(
             data=geo_path_collection,
             styledict=style_dict,
             name="Predictive PFT Forward Mesh Grid",
             stroke_width=0.0,
-            date_options="MM:DD:YY:hhmm"
+            # 'showValue': True forces the slider text to show.
+            # Passing a custom JS evaluation format strings strips timezone math.
+            date_options="YYYY-MM-DD_HH:mm [UTC]"
         ).add_to(m)
 
         legend_html_content = self._generate_html_legend(vmin, vmax, cmap_name=cmap_name)

@@ -5,7 +5,7 @@ from analysis.pft_gen_parallel import pull_data, group_client_dses, \
                                         calc_pfts, calc_soundings, \
                                         parse_to_dataframe, CACHE_BASE_DIR
 import analysis.mapping.config as config
-from analysis.mapping.copy_util import upload_simplified, create_remote_symlink
+from analysis.mapping.copy_util import upload_simplified
 
 # run_dashboard.py updates[cite: 3]
 def run_pipeline():
@@ -61,10 +61,9 @@ def run_pipeline():
     html_fname = config.OUTPUT_HTML.split(os.path.sep)[-1]
     upload_simplified(config.OUTPUT_HTML, os.path.join(config.REMOTE_DIR, html_fname),
                       hostname = config.HOSTNAME, username=config.USERNAME)
-    upload_simplified(config.OUTPUT_HTML, os.path.join(config.REMOTE_DIR, "latest.html"),
-                      hostname = config.HOSTNAME, username=config.USERNAME)
-    # create_remote_symlink(config.REMOTE_DIR, html_fname, 
-    #                       hostname = config.HOSTNAME, username=config.USERNAME)
+    if not config.DEBUG_MODE:
+        upload_simplified(config.OUTPUT_HTML, os.path.join(config.REMOTE_DIR, "latest.html"),
+                        hostname = config.HOSTNAME, username=config.USERNAME)
 
 if __name__ == "__main__":
     run_pipeline()
