@@ -22,7 +22,7 @@ import multiprocessing as mp
 import numpy as np
 import os
 import pandas as pd
-from pickle import dumps, loads
+from joblib import dump, load
 from pyrometeopy.fire_plumes import pft
 from pyrometeopy.bufkit import Profile, Sounding, Surface
 from scipy.interpolate import griddata
@@ -480,8 +480,8 @@ def group_client_dses(
     return out_dses
 
 
-def pft_worker(sounding):
-    (snd, (key_val, time, name)) = loads(sounding)
+def pft_worker(sounding_fp):
+    (snd, (key_val, time, name)) = load(sounding_fp)
     time = pd.to_datetime(snd.profile.time[0], format='%y%m%d/%H%M')
     pft_val = pft(snd, moisture_ratio=10.0, fire_elevation=0) # TODO: parameterize fire elevation
     return ((time, pft_val), (key_val, name))
@@ -489,7 +489,7 @@ def pft_worker(sounding):
 def calc_pfts(soundings, max_workers):
     pfts = []
     with ProcessPoolExecutor(max_workers = max_workers) as ppex:
-        futures = [ppex.submit(pft_worker, dumps(snd)) for snd in soundings]
+        futures = [ppex.submit(pft_worker, snd) for snd in soundings]
         for f in tqdm.tqdm(as_completed(futures), total = len(soundings), desc = "pft calculation"):
             out = f.result()
             if out is not None:

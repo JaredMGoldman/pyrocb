@@ -1,20 +1,98 @@
 from abc import ABC, abstractmethod
 import base64
 import io
-from herbie import paint
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
-import matplotlib.dates as mdates
 from scipy.interpolate import griddata
 import folium
 from shapely.geometry import shape, mapping, Polygon, Point
 import cartopy.io.shapereader as shapereader
 from shapely.ops import unary_union
+from concurrent.futures import ProcessPoolExecutor, as_completed
+import tqdm
 
 import analysis.mapping.config as config
 from analysis.mapping.timeslider_choropleth_utc import TimeSliderChoropleth as TimeSliderChoroplethUTC
+
+
+def _worker_render_single_plot(feature, pft_df, fx_name):
+    """
+    Isolated worker function running inside ProcessPoolExecutor.
+    Finds PFT data points within or near a single fire polygon, averages values 
+    per timestamp, and returns a base64 HTML string of the line plot.
+    """
+    geom = feature.get("geometry")
+    fire_id = feature.get("properties", {}).get("fireid", "UNKNOWN")
+    
+    if not geom:
+        return fire_id, "<p>No spatial geometry available for plot generation.</p>"
+    
+    try:
+        fire_poly = shape(geom)
+    except Exception:
+        return fire_id, "<p>Error parsing fire geometry.</p>"
+
+    # 1. Filter PFT data points spatially using bounding box first (for speed)
+    lon_min, lat_min, lon_max, lat_max = fire_poly.bounds
+    bbox_mask = (
+        (pft_df['lon'] >= lon_min) & (pft_df['lon'] <= lon_max) &
+        (pft_df['lat'] >= lat_min) & (pft_df['lat'] <= lat_max)
+    )
+    candidate_pft = pft_df[bbox_mask].copy()
+    fire_pft = pd.DataFrame()
+    
+    # Step A: True containment check
+    if not candidate_pft.empty:
+        is_inside = candidate_pft.apply(lambda row: fire_poly.contains(Point(row['lon'], row['lat'])), axis=1)
+        fire_pft = candidate_pft[is_inside]
+
+    # Step B: Fallback nearest point lookup if no points are strictly inside
+    if fire_pft.empty:
+        if pft_df.empty:
+            return fire_id, "<p style='color:gray;'>No PFT data points available in the dataset.</p>"
+            
+        distances = pft_df.apply(lambda row: fire_poly.distance(Point(row['lon'], row['lat'])), axis=1)
+        nearest_idx = distances.idxmin()
+        nearest_point_row = pft_df.loc[nearest_idx]
+        coordinate_mask = (pft_df['lon'] == nearest_point_row['lon']) & (pft_df['lat'] == nearest_point_row['lat'])
+        fire_pft = pft_df[coordinate_mask].copy()
+
+    if fire_pft.empty:
+        return fire_id, "<p style='color:gray;'>No PFT metrics found overlaying or near this polygon footprint.</p>"
+
+    # 2. Group by time and calculate average PFT track over the window
+    time_series = fire_pft.groupby('time')['value'].mean().sort_index()
+
+    # 3. Render the matplotlib chart entirely in-memory
+    fig, ax = plt.subplots(figsize=(4.5, 2.5), dpi=100)
+    fig.patch.set_facecolor("#FFFFFF")
+    ax.set_facecolor("#FFFFFF")
+    
+    x_labels = [pd.to_datetime(t).strftime('%m/%d %H:%M') for t in time_series.index]
+    ax.plot(x_labels, time_series.values, color='#e74c3c', linewidth=2, marker='o', markersize=4)
+    
+    ax.set_title(f"PFT {fx_name.upper()} Prediction", color='black', fontsize=10, fontweight='bold')
+    ax.set_ylabel("log PFT Value (GW)", color='black', fontsize=8)
+    ax.set_yscale('log')
+    ax.tick_params(colors='black', labelsize=7)
+    ax.grid(True, color='#444444', linestyle='--', alpha=0.5)
+    
+    fig.autofmt_xdate()
+    plt.xticks(rotation=30, ha='right')
+    plt.tight_layout()
+
+    # Save to a byte buffer object
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', facecolor=fig.get_facecolor(), edgecolor='none')
+    plt.close(fig)
+    buf.seek(0)
+    
+    # Encode binary to clean base64 HTML image tag string
+    base64_img = base64.b64encode(buf.read()).decode('utf-8')
+    html_img_tag = f'<img src="data:image/png;base64,{base64_img}" width="450" height="250">'
+    return fire_id, html_img_tag
 
 
 class FireMapBase(ABC):
@@ -37,15 +115,6 @@ class FireMapBase(ABC):
         ]
         unified_ground = unary_union(land_geoms)
         return unified_ground
-        lakes_shp = shapereader.natural_earth(
-            resolution='50m', category='physical', name='lakes'
-        )
-        lakes_reader = shapereader.Reader(lakes_shp)
-        lake_geoms = [lake.geometry for lake in lakes_reader.records()]
-        unified_lakes = unary_union(lake_geoms)
-
-        clean_landmass = unified_ground.difference(unified_lakes)
-        return clean_landmass
 
     def export_fire_statistics_csv(self, geojson_data, output_csv="active_fires_summary.csv"):
         """
@@ -65,11 +134,9 @@ class FireMapBase(ABC):
                 continue
 
             try:
-                # Safely parse the structural GeoJSON point/polygon using shapely for WKT string conversion
                 shapely_geom = shape(geom)
                 wkt_geometry = shapely_geom.wkt
                 
-                # Extract identifiers and spatial properties safely
                 fire_id = props.get("fireid", "UNKNOWN")
                 peak_area = props.get("farea", 0.0)
                 mean_frp = props.get("meanfrp", 0.0)
@@ -116,13 +183,11 @@ class FireMapBase(ABC):
         """Interpolates PFT onto a grid and masks by land."""
         if pft_df.empty: return None, None
         
-        # Grid Setup
-        extent = config.bounds # Focused NA View
+        extent = config.bounds
         grid_lons = np.linspace(extent[0], extent[1], 300)
         grid_lats = np.linspace(extent[2], extent[3], 200)
         grid_x, grid_y = np.meshgrid(grid_lons, grid_lats)
         
-        # Group by time to create temporal frames
         frames = []
         clean_df = pft_df[np.isfinite(pft_df['value'])]
         vmin, vmax = clean_df['value'].min(), np.percentile(clean_df['value'], 99)
@@ -135,15 +200,13 @@ class FireMapBase(ABC):
                 (grid_x, grid_y), method='linear'
             )
             
-            # Mask grid points outside land
             for i in range(len(grid_lats)):
                 for j in range(len(grid_lons)):
                     if not self.unified_land_mask.contains(shape({"type": "Point", "coordinates": [grid_lons[j], grid_lats[i]]})):
                         grid_z[i, j] = np.nan
             
-            # Convert to RGBA
             rgba = cmap(norm(grid_z))
-            rgba[np.isnan(grid_z)] = [0, 0, 0, 0] # Transparent ocean
+            rgba[np.isnan(grid_z)] = [0, 0, 0, 0]
             frames.append({"time": timestamp, "image": np.flipud(rgba)})
             
         return frames, extent
@@ -187,97 +250,7 @@ class FireMapBase(ABC):
         </div>
         """
         return legend_html
-    
-    def _generate_pft_time_series_plot(self, feature, pft_df):
-        """
-        Finds PFT data points within the fire polygon, averages values 
-        per timestamp, and returns a base64 HTML string of a line plot.
-        """
-        geom = feature.get("geometry")
-        if not geom:
-            return "<p>No spatial geometry available for plot generation.</p>"
-        
-        try:
-            fire_poly = shape(geom)
-        except Exception:
-            return "<p>Error parsing fire geometry.</p>"
 
-        # 1. Filter PFT data points spatially using bounding box first (for speed)
-        # Then refine using a true boolean mask check for containment
-        lon_min, lat_min, lon_max, lat_max = fire_poly.bounds
-        bbox_mask = (
-            (pft_df['lon'] >= lon_min) & (pft_df['lon'] <= lon_max) &
-            (pft_df['lat'] >= lat_min) & (pft_df['lat'] <= lat_max)
-        )
-        candidate_pft = pft_df[bbox_mask].copy()
-
-        fire_pft = pd.DataFrame()
-        
-        # Step A: If we have bounding box candidates, check for true containment
-        if not candidate_pft.empty:
-            is_inside = candidate_pft.apply(lambda row: fire_poly.contains(Point(row['lon'], row['lat'])), axis=1)
-            fire_pft = candidate_pft[is_inside]
-
-        # Step B: FALLBACK BACKUP CRITERIA
-        # If no points are strictly inside the polygon (or bbox was empty), find the single nearest point
-        if fire_pft.empty:
-            if pft_df.empty:
-                return "<p style='color:gray;'>No PFT data points available in the dataset.</p>"
-                
-            # Calculate distance from the fire polygon to every point in the full dataframe
-            # Note: Shapely distance on unprojected lat/lon is a degree approximation, 
-            # but perfectly fine for identifying the absolute closest indexing neighbor.
-            distances = pft_df.apply(lambda row: fire_poly.distance(Point(row['lon'], row['lat'])), axis=1)
-            nearest_idx = distances.idxmin()
-            
-            # Grab all temporal rows matching that specific nearest station/point coordinate location
-            nearest_point_row = pft_df.loc[nearest_idx]
-            coordinate_mask = (pft_df['lon'] == nearest_point_row['lon']) & (pft_df['lat'] == nearest_point_row['lat'])
-            fire_pft = pft_df[coordinate_mask].copy()
-
-        # Double check safeguard before moving to groupby/plotting
-        if fire_pft.empty:
-            return "<p style='color:gray;'>No PFT metrics found overlaying or near this polygon footprint.</p>"
-
-        # 2. Group by time and calculate average PFT track over the window
-        time_series = fire_pft.groupby('time')['value'].mean().sort_index()
-
-        # 3. Render the matplotlib chart entirely in-memory
-        fig, ax = plt.subplots(figsize=(4.5, 2.5), dpi=100)
-        
-        # Clean up formatting for dark_matter dashboard compliance
-        fig.patch.set_facecolor("#FFFFFF")
-        ax.set_facecolor("#FFFFFF")
-        
-        # Convert index to readable string format if it's datetime
-        x_labels = [pd.to_datetime(t).strftime('%m/%d %H:%M') for t in time_series.index]
-        
-        ax.plot(x_labels, np.log(time_series.values), color='#e74c3c', linewidth=2, marker='o', markersize=4)
-        
-        ax.set_title(f"PFT {config.fx_names[0].upper()} Prediction", color='black', fontsize=10, fontweight='bold')
-        ax.set_ylabel("log PFT Value (GW)", color='black', fontsize=8)
-        ax.set_yscale('log')
-        ax.tick_params(colors='black', labelsize=7)
-        ax.grid(True, color='#444444', linestyle='--', alpha=0.5)
-        
-        # Rotate dates so they don't smash together
-        fig.autofmt_xdate()
-        # ax.xaxis.set_major_locator(mdates.HourLocator(interval=config.plot_freq))
-        # plt.xticks(rotation=30)
-        plt.xticks(rotation=30, ha='right')
-        plt.tight_layout()
-
-        # Save to a buffer object
-        buf = io.BytesIO()
-        plt.savefig(buf, format='png', facecolor=fig.get_facecolor(), edgecolor='none')
-        plt.close(fig)
-        buf.seek(0)
-        
-        # Encode binary to clean base64 HTML image tag string
-        base64_img = base64.b64encode(buf.read()).decode('utf-8')
-        html_img_tag = f'<img src="data:image/png;base64,{base64_img}" width="450" height="250">'
-        return html_img_tag
-    
     def compile_integrated_map(self, geojson_data, pft_df, output_html="weekly_fire_map.html", cmap_name='autumn'):
         """
         Builds a spatiotemporal hourly-precision grid of PFT values over land mass 
@@ -320,7 +293,6 @@ class FireMapBase(ABC):
 
         geo_path_collection = {"type": "FeatureCollection", "features": grid_features}
 
-        # Setup interpolation scales
         clean_pft = pft_df[np.isfinite(pft_df['value'])].copy()
         timestamps = sorted(clean_pft['time'].unique())
         
@@ -337,7 +309,6 @@ class FireMapBase(ABC):
             ts_group = clean_pft[clean_pft['time'] == ts]
             if len(ts_group) < 4: continue
             
-            # 1. Keep this as a strict UTC timestamp
             ts_naive = pd.to_datetime(ts, utc=True).tz_localize(None)
             unix_sec = str(int(ts_naive.timestamp()))
             
@@ -359,14 +330,11 @@ class FireMapBase(ABC):
                         'opacity': 0.45
                     }
 
-        # 3. Use the frontend date_options trick to force JavaScript to read it as UTC/Zulu
         TimeSliderChoroplethUTC(
             data=geo_path_collection,
             styledict=style_dict,
             name="Predictive PFT Forward Mesh Grid",
             stroke_width=0.0,
-            # 'showValue': True forces the slider text to show.
-            # Passing a custom JS evaluation format strings strips timezone math.
             date_options="YYYY-MM-DD_HH:mm [UTC]"
         ).add_to(m)
 
@@ -377,22 +345,36 @@ class FireMapBase(ABC):
             # 1. Create ONE single FeatureGroup container for all active fires
             # This collapses the entire UI menu mess down to a single clean toggle
             fires_layer_group = folium.FeatureGroup(name="Active Fires", show=True)
+            features_list = geojson_data["features"]
 
-            # Iterate over individual features to build and inject the custom HTML popups
-            for feature in geojson_data["features"]:
+            print(f"[+] Launching parallel rendering across worker pools for {len(features_list)} fires...")
+            
+            # 2. Parallel Generation Stage: Distribute processing across CPU nodes
+            chart_lookup = {}
+            with ProcessPoolExecutor(max_workers=config.max_workers) as executor:
+                futures = [
+                    executor.submit(_worker_render_single_plot, feat, clean_pft, config.fx_names[0])
+                    for feat in features_list
+                ]
+                
+                for f in tqdm.tqdm(as_completed(futures), total=len(features_list), desc="Parallel Popup Render"):
+                    fire_id, chart_html = f.result()
+                    chart_lookup[fire_id] = chart_html
+
+            # 3. Synchronous Mapping Compilation Stage
+            # Building Folium objects is very fast now that the heavy chart-generation math is pre-computed
+            for feature in features_list:
                 props = feature.get("properties", {})
                 
-                # Extract basic text info fields securely
                 f_name = props.get('name', 'Unknown')
                 f_id = props.get('fireid', 'N/A')
                 f_start = props.get('t_start', 'N/A')
                 f_status = props.get('status', 'N/A')
-                f_area = props.get('farea', props.get('area', 'N/A'))
 
-                # Call our helper function to spin up the trend chart
-                chart_html = self._generate_pft_time_series_plot(feature, clean_pft)
+                # Pull the pre-compiled base64 chart layout directly from the lookup dictionary
+                chart_html = chart_lookup.get(f_id, "<p style='color:gray;'>Error generating plot data.</p>")
 
-                # Build structural dark-themed popup card
+                # Build dark-themed popup card structural wrapper
                 popup_content = f"""
                 <div style="font-family: Arial, sans-serif; font-size: 12px; color: #FFFFFF; background-color: #FFFFFF; padding: 10px; border-radius: 4px; width: 460px;">
                     <h4 style="margin: 0 0 5px 0; color: #e74c3c; border-bottom: 1px solid #444;">{f_name}</h4>
@@ -407,12 +389,9 @@ class FireMapBase(ABC):
                 </div>
                 """
                 
-                # Create the iframe and custom popup for this individual feature
                 iframe = folium.IFrame(html=popup_content, width=480, height=360)
                 custom_popup = folium.Popup(iframe, max_width=500)
                 
-                # 2. Add the feature to the FeatureGroup instead of directly to map 'm'
-                # Also set embed=False inside GeoJson so individual sub-features stay quiet
                 folium.GeoJson(
                     feature,
                     style_function=lambda x: {
@@ -425,11 +404,11 @@ class FireMapBase(ABC):
                         fields=['name', 'fireid'], 
                         aliases=['Name:', 'ID:']
                     ),
-                    embed=False  # Keeps sub-features from leaking out into layer lists
+                    embed=False  # Crucial: Prevent child sub-features from leaking out as distinct layers
                 ).add_child(custom_popup).add_to(fires_layer_group)
 
-            # 3. Finally, add the single unified layer group to the master map
             fires_layer_group.add_to(m)
+
         folium.LayerControl(collapsed=False).add_to(m)
         m.save(output_html)
         print(f"[+] Spatiotemporal dashboard generated with hourly slider and colorbar: '{output_html}'")

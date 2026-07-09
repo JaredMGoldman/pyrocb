@@ -11,23 +11,31 @@ from data.clients.gfs_client import GFSClient, GFS
 from data.clients.rrfs_client import RRFSClient, RRFS
 from utils.constants import CACHE_BASE_DIR
 
+def make_n_len_str(value, n=2):
+    return f"%0{n}d" % (int(value),)
+
+DEBUG_MODE = False
+
 # Network & Server Options
 SERVER_PORT = 8650
-gfs_time = "2026-06-01"
-now_dt = pd.Timestamp(datetime.now())
-now_date = f"{now_dt.year}-{now_dt.month}-{now_dt.day}"
-fxx_range = 48
+
+now_dt = pd.Timestamp("2026-06-01") if DEBUG_MODE else pd.Timestamp(datetime.now())
+forecast_time = "06:00"
+date_name = f"{now_dt.year}-{make_n_len_str(now_dt.month)}-{make_n_len_str(now_dt.day)}"
+now_date = f"{now_dt.year}-{make_n_len_str(now_dt.month)}-{make_n_len_str(now_dt.day)} {forecast_time}"
+fxx_range = 48 if DEBUG_MODE else 72
 fxx_freq = 2
-clients =  [RRFSClient]
-fx_names = [RRFS]
+plot_freq = 6
+clients =  [GFSClient] if DEBUG_MODE else [RRFSClient]
+fx_names = [GFS] if DEBUG_MODE else [RRFS]
 active_fire_class = ActiveFirePerimeterPipeline
-max_workers = 48
+max_workers = 38
 
 cmap_name = 'viridis'
 
-date_str = f"{now_dt.year}{now_dt.month}{now_dt.day}"
+date_str = f"{now_dt.year}-{now_dt.month}-{now_dt.day}_00Z"
 
-OUTPUT_HTML = f"{CACHE_BASE_DIR}/folium/weekly_fire_map_{date_str}.html"
+OUTPUT_HTML = f"{CACHE_BASE_DIR}/folium/pft_fire_map_{date_str}.html"
 CSV_MANIFEST = f"{CACHE_BASE_DIR}/folium/fire_pipeline_manifest_{date_str}.csv"
 
 # Stable Asset CDNs to prevent Leaflet/Jinja2 freezing bugs
