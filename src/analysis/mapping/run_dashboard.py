@@ -7,6 +7,7 @@ from analysis.mapping.pft_gen_parallel import pull_data, group_client_dses, \
 import analysis.mapping.config as config
 from analysis.mapping.copy_util import upload_simplified
 from analysis.mapping.signal_cache import SignalCache
+from analysis.canadian_frp_prediction import execute_predictive_fire_pipeline
 
 # run_dashboard.py updates[cite: 3]
 def run_pipeline():
@@ -32,6 +33,7 @@ def run_pipeline():
     print("Fetching active fire perimeters...")
     data_pipeline = fire_fetch_class()
     fire_geojson = data_pipeline.fetch_fires(days_back=1, csv_path = os.path.join(csv_today_dir, csv_fname))
+    canadian_frp_csv = execute_predictive_fire_pipeline(target_dt = config.now_dt)
     os.makedirs(csv_today_dir, exist_ok=True)
     shutil.copy(os.path.join(csv_today_dir, csv_fname), os.path.join(csv_current_dir, csv_fname))
     print(f"copied current fires to {os.path.join(csv_current_dir, csv_fname)}")

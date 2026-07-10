@@ -1,5 +1,6 @@
 import os
 import glob
+import analysis.mapping.config as config
 import urllib.request
 from datetime import datetime, timedelta
 import numpy as np
@@ -8,6 +9,8 @@ import xarray as xr
 import matplotlib.pyplot as plt
 from scipy.interpolate import griddata
 from shapely.wkt import loads
+import shutil
+import concurrent.futures
 
 # Import the programmatic internal data API directly
 from data.clients.rave_client import RAVEClient
@@ -19,8 +22,8 @@ from utils.constants import CACHE_BASE_DIR
 
 def download_canadian_forecasts(target_date_str, output_dir):
     """
-    Automates downloading the latest and yesterday's Canadian forecasts.
-    Expects target_date_str in 'YYYYMMDD' format.
+    Automates downloading the latest and yesterday's Canadian forecasts safely.
+    Uses atomic writing and header verification to prevent corrupt .nc files.
     """
     os.makedirs(output_dir, exist_ok=True)
     current_dt = datetime.strptime(target_date_str, "%Y%m%d")
@@ -35,13 +38,31 @@ def download_canadian_forecasts(target_date_str, output_dir):
     for url in urls:
         filename = os.path.basename(url)
         dest_path = os.path.join(output_dir, filename)
-        if not os.path.exists(dest_path):
-            print(f"[+] Downloading Canadian Forecast: {filename}")
-            try:
-                urllib.request.urlretrieve(url, dest_path)
-            except Exception as e:
-                print(f"[-] Failed to fetch {url}: {e}")
-        downloaded_files.append(dest_path)
+        tmp_path = dest_path + ".tmp"
+        
+        if os.path.exists(dest_path) and os.path.getsize(dest_path) > 0:
+            downloaded_files.append(dest_path)
+            continue
+            
+        print(f"[+] Requesting Canadian Forecast: {filename}")
+        try:
+            with urllib.request.urlopen(url) as response:
+                if response.status != 200:
+                    print(f"[-] Server returned status {response.status} for {filename}. Skipping.")
+                    continue
+                
+                with open(tmp_path, 'wb') as tmp_file:
+                    shutil.copyfileobj(response, tmp_file)
+            
+            os.replace(tmp_path, dest_path)
+            print(f"[+] Download complete: {filename}")
+            downloaded_files.append(dest_path)
+            
+        except Exception as e:
+            print(f"[-] Failed to fetch {url}: {e}")
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+                
     return downloaded_files
 
 # ==========================================
@@ -67,39 +88,236 @@ def map_latlon_obs_to_model(poly_lats, poly_lons, grid_lats, grid_lons):
     return idx_x, idx_y
 
 # ==========================================
+# PHASE 4: REPLICATED INDIVIDUAL WORKER TASK
+# ==========================================
+
+def plot_frp_predictions(rave_timeline, frp_timeseries, forecast_files,
+                         time_forecast, frp_forecast_int_masked, forecast_dates,
+                           time_forecast_hybrid, frp_forecast_hybrid, fire_name, out_dir):
+    plt.figure(figsize=(6, 4))
+    plt.plot(rave_timeline, frp_timeseries, '-b', label='RAVE Observations')
+    
+    colors = ['k', 'r']
+    for i in range(len(forecast_files)):
+        plt.plot(time_forecast[i], frp_forecast_int_masked[i], f"-{colors[i]}", 
+                 label=f"Forecast {forecast_dates[i].strftime('%m/%d %H')}Z")
+                 
+    plt.plot(time_forecast_hybrid, frp_forecast_hybrid, '-g', 
+             label=f"Forecast {forecast_dates[1].strftime('%m/%d %H')}Z Hybrid")
+    
+    plt.xlabel('Date')
+    plt.ylabel('Total Fire FRP [MW]')
+    plt.legend(loc='upper left', fontsize=8)
+    plt.grid(True, linestyle='--', alpha=0.5)
+    plt.xticks(rotation=30)
+    plt.tight_layout()
+    
+    plt.savefig(f"{out_dir}/frp_rave_vs_prediction_{fire_name.lower().replace(' ','_')}.png", dpi=300)
+    print(f'[*] saved plot to {out_dir}/frp_rave_vs_prediction_{fire_name.lower().replace(' ','_')}.png')
+    plt.close()
+
+def process_single_fire(args):
+    """
+    Isolated worker execution context handling a single target fire.
+    Generates diagnostic files and returns the path to a cached NetCDF file.
+    """
+    idx, row, context = args
+    
+    # Unpack clean, pickle-safe variable primitives from context payload
+    forecast_files = context['forecast_files']
+    forecast_dates = context['forecast_dates']
+    lat_forecast_full = context['lat_forecast_full']
+    lon_forecast_full = context['lon_forecast_full']
+    Nx_fc_max = context['Nx_fc_max']
+    Ny_fc_max = context['Ny_fc_max']
+    date_i_dt = context['date_i_dt']
+    date_f_dt = context['date_f_dt']
+    date_mask_rave_dt = context['date_mask_rave_dt']
+    out_dir = context['out_dir']
+    cache_dir = context['cache_dir']
+    rave_api = context['rave_api']
+    plot_fires = context['plot_fires']
+    
+    fire_name = str(row.get('name', row.get('fire_id', f'target_fire_{idx}'))).replace(" ", "_")
+    print(f"[*] [PID {os.getpid()}] Processing cross-grid interpolations for target: {fire_name}")
+    
+    # Geometrical envelope assignment reconstruction mapping structures
+    # --- Geometry Parsing ---
+    if 'wkt_geometry' in row and pd.notna(row['wkt_geometry']):
+        poly_geom = loads(row['wkt_geometry'])
+        
+        # Check if geometry is a MultiPolygon or single Polygon
+        if poly_geom.geom_type == 'MultiPolygon':
+            lon_list, lat_list = [], []
+            for part in poly_geom.geoms:
+                x, y = part.exterior.xy
+                lon_list.extend(x)
+                lat_list.extend(y)
+            lon_verts = np.array(lon_list)
+            lat_verts = np.array(lat_list)
+        else:
+            # Handle standard single Polygon
+            lon_verts, lat_verts = poly_geom.exterior.xy
+            lon_verts, lat_verts = np.array(lon_verts), np.array(lat_verts)
+    else:
+        c_lat, c_lon = row['lat_centroid'], row['lon_centroid']
+        lat_verts = np.array([c_lat - 0.25, c_lat - 0.25, c_lat + 0.25, c_lat + 0.25])
+        lon_verts = np.array([c_lon - 0.25, c_lon + 0.25, c_lon + 0.25, c_lon - 0.25])
+        from shapely.geometry import box
+        poly_geom = box(lon_verts.min(), lat_verts.min(), lon_verts.max(), lat_verts.max())
+
+    # Programmatically retrieve RAVE data directly from API subset routines
+    try:
+        rave_ds = rave_api()._query(
+            polygon=poly_geom,
+            start=date_i_dt.strftime('%Y-%m-%d %H:%M'),
+            end=date_f_dt.strftime('%Y-%m-%d %H:%M'),
+            variables=["FRP_MEAN", "FRE"],
+            drop_outside=False
+        )
+    except Exception as e:
+        print(f"    [-] RAVE Client query processing error skipped for {fire_name}: {e}")
+        return None
+
+    # ==========================================
+    # EXTRACT 1D SUMMARY STATISTICS FROM RAVE API
+    # ==========================================
+    frp_timeseries = rave_ds['FRP_MEAN'].values
+    frp_timeseries[frp_timeseries == 0] = np.nan
+    rave_timeline = [pd.to_datetime(t) for t in rave_ds['time'].values]
+
+    # Map Canadian Forecasting windows onto target spatial crops bounding box
+    fc_x, fc_y = map_latlon_obs_to_model(lat_verts, lon_verts, lat_forecast_full, lon_forecast_full)
+    min_fcx, max_fcx = max(np.min(fc_x) - 1, 0), min(np.max(fc_x) + 1, Nx_fc_max - 1)
+    min_fcy, max_fcy = max(np.min(fc_y) - 1, 0), min(np.max(fc_y) + 1, Ny_fc_max - 1)
+
+    time_forecast = []
+    frp_forecast_int_masked = []
+
+    try:
+        # Re-locate the precise index step matching pivot targets inside the dataset timeline
+        idx_rave_pivot = min(range(len(rave_timeline)), key=lambda i: abs(rave_timeline[i] - date_mask_rave_dt))
+    except ValueError:
+        print(f"[-] Pivot timestamp {date_mask_rave_dt} error out boundaries for {fire_name}.")
+        return None
+
+    # ===================================================
+    # AGGREGATE FORECAST MODELS DIRECTLY ON BOUNDING BOX
+    # ===================================================
+    for f_idx, fc_file in enumerate(forecast_files):
+        with xr.open_dataset(fc_file) as ds_f:
+            fc_hours = ds_f['time'].values
+            fc_time_axis = np.array([forecast_dates[f_idx] + timedelta(hours=float(th)) for th in fc_hours])
+            time_forecast.append(fc_time_axis)
+            
+            # 1. Get the exact dimension names from the dataset (e.g., 'south_north', 'west_east')
+            # 'Time' is usually the first dimension, the other two are spatial
+            spatial_dims = [dim for dim in ds_f['FRP'].dims if dim != 'time']
+            
+            # 2. Use xarray's positional indexer using the exact dimension names
+            # This ensures min_fcx always maps to the first spatial dim, and min_fcy to the second
+            slicers = {
+                spatial_dims[0]: slice(min_fcx, max_fcx + 1),
+                spatial_dims[1]: slice(min_fcy, max_fcy + 1)
+            }
+            crop_ds = ds_f['FRP'].isel(**slicers)
+            
+            # 3. Sum over the spatial dimensions natively, leaving only the 'Time' dimension intact
+            masked_totals = crop_ds.sum(dim=spatial_dims).values
+            
+            frp_forecast_int_masked.append(masked_totals)
+    # ==========================================
+    # PHASE 5: HYBRID PREDICTION SYNTHESIS STAGE
+    # ==========================================
+    time_forecast_hybrid = time_forecast[1]
+    frp_forecast_hybrid = np.full(time_forecast_hybrid.shape, np.nan)
+    
+    try:
+        idx_fc1_pivot = list(time_forecast[0]).index(date_mask_rave_dt)
+        idx_fc2_pivot = list(time_forecast[1]).index(date_mask_rave_dt)
+    except ValueError:
+        print(f"[-] Warning: Time axes are misaligned for {fire_name}. Skipping hybrid step.")
+        return None
+
+    historical_rave_sample = frp_timeseries[max(0, idx_rave_pivot-24):idx_rave_pivot]
+    fc1_reference_sample = frp_forecast_int_masked[0][max(0, idx_fc1_pivot-24):idx_fc1_pivot]
+    
+    # Fill hybrid sequences safely across available forecast horizons
+    scaling_ratio = np.nanmean(frp_forecast_int_masked[1][idx_fc2_pivot:idx_fc2_pivot+24]) / np.nanmean(fc1_reference_sample)
+    frp_forecast_hybrid[idx_fc2_pivot:idx_fc2_pivot+24] = historical_rave_sample * scaling_ratio
+    
+    scaling_ratio_day2 = np.nanmean(frp_forecast_int_masked[1][idx_fc2_pivot+24:idx_fc2_pivot+48]) / np.nanmean(fc1_reference_sample)
+    frp_forecast_hybrid[idx_fc2_pivot+24:idx_fc2_pivot+48] = historical_rave_sample * scaling_ratio_day2
+
+    # ==========================================
+    # PHASE 6: DIAGNOSTIC GRAPH GENERATION
+    # ==========================================
+    if plot_fires:
+        plot_frp_predictions(rave_timeline, frp_timeseries, 
+                            forecast_files, time_forecast, 
+                            frp_forecast_int_masked, forecast_dates,
+                            time_forecast_hybrid, frp_forecast_hybrid, 
+                            fire_name, out_dir)
+
+    # ==========================================
+    # PHASE 7: LOCAL FILE SYNC AND NETCDF CACHING
+    # ==========================================
+    csv_out_path = f"{out_dir}/rave_frp_{fire_name.lower().replace(' ','_')}.csv"
+    records_df = pd.DataFrame({
+        'timestamp': [t.strftime('%Y-%m-%d %H:%M:%S') for t in rave_timeline],
+        'rave_frp_mw': np.nan_to_num(frp_timeseries, nan=0.0).astype(int)
+    })
+    records_df.to_csv(csv_out_path, index=False)
+    
+    # Store output data arrays inside a temporary xarray Dataset object
+    ds_cache = xr.Dataset(
+        data_vars=dict(
+            fc_yesterday=(["time_fc0"], frp_forecast_int_masked[0]),
+            fc_latest=(["time_fc1"], frp_forecast_int_masked[1]),
+            fc_hybrid=(["time_hybrid"], frp_forecast_hybrid)
+        ),
+        coords=dict(
+            time_fc0=[t.strftime('%Y-%m-%d %H:%M:%S') for t in time_forecast[0]],
+            time_fc1=[t.strftime('%Y-%m-%d %H:%M:%S') for t in time_forecast[1]],
+            time_hybrid=[t.strftime('%Y-%m-%d %H:%M:%S') for t in time_forecast_hybrid]
+        ),
+        attrs=dict(fire_name=fire_name, parent_idx=idx)
+    )
+    
+    # Dump cleanly to unique local disk tracking target to safely escape sub-process boundary
+    cache_filepath = os.path.join(cache_dir, f"cache_arrays_{fire_name}_{idx}.nc")
+    ds_cache.to_netcdf(cache_filepath)
+    ds_cache.close()
+    
+    return cache_filepath
+
+# ==========================================
 # PHASE 3: CORE PREDICTIVE EXECUTIVE PIPELINE
 # ==========================================
 
-def execute_predictive_fire_pipeline(target_date_str, out_dir = f"{CACHE_BASE_DIR}/ca_frp", run_downloads=True):
+def execute_predictive_fire_pipeline(target_dt, out_dir = f"{CACHE_BASE_DIR}/ca_frp",
+                                     plot_fires = False):
     """
     Consolidated operational function replacing the original multi-step MATLAB execution loop.
     Integrates the programmatic RAVEClient API to extract data directly.
-    
-    Parameters:
-    -----------
-    target_date_str : str
-        Format 'YYYYMMDD' (e.g., '20260623')
     """
-    forecast_pivot_dt = datetime.strptime(target_date_str, "%Y%m%d")
+    target_date_str = target_dt.strftime('%Y%m%d')
     
     # Establish running timeframe context anchors
-    date_i_dt = forecast_pivot_dt - timedelta(days=3)
-    date_f_dt = forecast_pivot_dt + timedelta(days=3)
-    date_mask_rave_dt = forecast_pivot_dt + timedelta(hours=6) # 06Z forecast mark
+    date_i_dt = target_dt - timedelta(days=3)
+    date_f_dt = target_dt + timedelta(days=3)
+    date_mask_rave_dt = target_dt + timedelta(hours=6) # 06Z forecast mark
     
-    forecast_path = '/data/saide/INSPYRE/sample_firesmoke_ca_data/'
+    forecast_path = '/data/jaredgoldman/INSPYRE/sample_firesmoke_ca_data/'
     fire_polygon_file = '/data/jaredgoldman/cache/active_fires/current/fire_pipeline_manifest.csv'
     
     os.makedirs(f"{out_dir}", exist_ok=True)
     os.makedirs("csv", exist_ok=True)
     
-    # 1. Trigger Async Canadian Download Engine
-    if run_downloads:
-        print("[*] Checking near-real-time Canadian forecast downloads...")
-        download_canadian_forecasts(target_date_str, forecast_path)
+    download_canadian_forecasts(target_date_str, forecast_path)
 
-    # 2. Map Forecast NetCDF Data Target Handles
-    yesterday_str = (forecast_pivot_dt - timedelta(days=1)).strftime('%Y%m%d')
+    # 2. Map Forecast NetCDF Data Target Handles    
+    yesterday_str = (target_dt - timedelta(days=1)).strftime('%Y%m%d')
     forecast_files = [
         os.path.join(forecast_path, f"fwf-hourly-d02-{yesterday_str}06.nc"),
         os.path.join(forecast_path, f"fwf-hourly-d02-{target_date_str}06.nc")
@@ -121,7 +339,7 @@ def execute_predictive_fire_pipeline(target_date_str, out_dir = f"{CACHE_BASE_DI
         return
 
     # Instantiate programmatic RAVE API client instance
-    rave_api = RAVEClient()[cite: 5]
+    rave_api = RAVEClient
 
     # Read base static spatial framework dimensions of forecasting engines
     with xr.open_dataset(forecast_files[0]) as fc_sample:
@@ -130,167 +348,105 @@ def execute_predictive_fire_pipeline(target_date_str, out_dir = f"{CACHE_BASE_DI
         Nx_fc_max, Ny_fc_max = lat_forecast_full.shape
 
     # ==========================================
-    # PHASE 4: REPLICATE INDIVIDUAL FIRE MAPPING
+    # PARALLEL EXECUTION MULTIPROCESSING HARNESS
     # ==========================================
-    for idx, row in fire_df.iterrows():
-        fire_name = str(row.get('name', row.get('fire_id', f'target_fire_{idx}'))).replace(" ", "_")
-        print(f"[*] Processing cross-grid interpolations for target: {fire_name}")
-        
-        # Geometrical envelope assignment reconstruction mapping structures
-        if 'wkt_geometry' in row and pd.notna(row['wkt_geometry']):
-            poly_geom = loads(row['wkt_geometry'])
-            lon_verts, lat_verts = poly_geom.exterior.xy
-            lon_verts, lat_verts = np.array(lon_verts), np.array(lat_verts)
-        else:
-            c_lat, c_lon = row['lat_centroid'], row['lon_centroid']
-            lat_verts = np.array([c_lat - 0.25, c_lat - 0.25, c_lat + 0.25, c_lat + 0.25])
-            lon_verts = np.array([c_lon - 0.25, c_lon + 0.25, c_lon + 0.25, c_lon - 0.25])
-            from shapely.geometry import box
-            poly_geom = box(lon_verts.min(), lat_verts.min(), lon_verts.max(), lat_verts.max())
-
-        # Programmatically retrieve RAVE data directly from API subset routines[cite: 5]
-        print(f"    [->] Programmatically fetching RAVE values via RAVEClient inside geometry...")
-        try:
-            rave_ds = rave_api._query([cite: 5]
-                polygon=poly_geom,[cite: 5]
-                start=date_i_dt.strftime('%Y-%m-%d %H:%M'),[cite: 5]
-                end=date_f_dt.strftime('%Y-%m-%d %H:%M'),[cite: 5]
-                variables=["FRP_MEAN", "FRE"],[cite: 5]
-                drop_outside=False[cite: 5]
-            )
-        except Exception as e:
-            print(f"    [-] RAVE Client query processing error skipped: {e}")
-            continue
-
-        # Extract underlying coordinate grids and maps programmatically handled by RAVEClient[cite: 5]
-        lat_RAVE_crop = rave_ds['grid_latt'].values
-        lon_RAVE_crop = rave_ds['grid_lont'].values
-        
-        # Handle 0..360 normalization if RAVE data still relies on raw grids[cite: 5]
-        if np.nanmin(lon_RAVE_crop) >= 0 and np.nanmax(lon_RAVE_crop) > 180:
-            lon_RAVE_crop = ((lon_RAVE_crop + 180) % 360) - 180[cite: 5]
+    cache_dir = os.path.join(out_dir, ".xarray_cache")
+    os.makedirs(cache_dir, exist_ok=True)
+    
+    # Build a pickle-safe context payload mapping primitives across sub-processes
+    context_payload = {
+        'forecast_files': forecast_files,
+        'forecast_dates': forecast_dates,
+        'lat_forecast_full': lat_forecast_full,
+        'lon_forecast_full': lon_forecast_full,
+        'Nx_fc_max': Nx_fc_max,
+        'Ny_fc_max': Ny_fc_max,
+        'date_i_dt': date_i_dt,
+        'date_f_dt': date_f_dt,
+        'date_mask_rave_dt': date_mask_rave_dt,
+        'out_dir': out_dir,
+        'cache_dir': cache_dir,
+        'rave_api': rave_api,
+        'plot_fires': plot_fires
+    }
+    
+    worker_tasks = [(idx, row, context_payload) for idx, row in fire_df.iterrows()]
+    cached_nc_paths = []
+    
+    print(f"[*] Dispatching grid interpolation calculations to ProcessPoolExecutor...")
+    try:
+        with concurrent.futures.ProcessPoolExecutor(max_workers=config.max_workers) as executor:
+            # Map retains tracking index sequence integrity natively
+            results = executor.map(process_single_fire, worker_tasks)
+            cached_nc_paths = [path for path in results if path is not None]
             
-        frp_cube = rave_ds['FRP_MEAN'].values
-        fre_cube = rave_ds['FRE'].values
-        rave_timeline = [pd.to_datetime(t) for t in rave_ds['time'].values]
-
-        # Calculate time series totals
-        frp_timeseries = np.nansum(np.nansum(frp_cube, axis=1), axis=0)
-        frp_timeseries[frp_timeseries == 0] = np.nan
-
-        # Map Canadian Forecasting windows onto target spatial crops
-        fc_x, fc_y = map_latlon_obs_to_model(lat_verts, lon_verts, lat_forecast_full, lon_forecast_full)
-        min_fcx, max_fcx = max(np.min(fc_x) - 1, 0), min(np.max(fc_x) + 1, Nx_fc_max - 1)
-        min_fcy, max_fcy = max(np.min(fc_y) - 1, 0), min(np.max(fc_y) + 1, Ny_fc_max - 1)
+        print(f"[+] All processes completed execution. Synchronizing time series outputs...")
         
-        lon_fc_crop = lon_forecast_full[min_fcx:max_fcx+1, min_fcy:max_fcy+1]
-        lat_fc_crop = lat_forecast_full[min_fcx:max_fcx+1, min_fcy:max_fcy+1]
-
-        time_forecast = []
-        frp_forecast_int_masked = []
-
-        try:
-            # Re-locate the precise index step matching pivot targets inside the dataset timeline
-            idx_rave_pivot = min(range(len(rave_timeline)), key=lambda i: abs(rave_timeline[i] - date_mask_rave_dt))
-        except ValueError:
-            raise ValueError(f"Pivot timestamp {date_mask_rave_dt} is positioned outside the specified boundaries.")
-
-        # Re-verify lookback index boundaries to calculate the operational FRE fire activity mask
-        fre_lookback_window = fre_cube[:, :, max(0, idx_rave_pivot-23):idx_rave_pivot+1]
-        frp_mask = np.nansum(fre_lookback_window, axis=2) > 0
-
-        for f_idx, fc_file in enumerate(forecast_files):
-            with xr.open_dataset(fc_file) as ds_f:
-                fc_hours = ds_f['Time'].values
-                fc_time_axis = np.array([forecast_dates[f_idx] + timedelta(hours=float(th)) for th in fc_hours])
-                time_forecast.append(fc_time_axis)
+        # Initialize a list to hold dataframes for each individual fire
+        timeseries_list = []
+        
+        # Read the stored intermediate NetCDF cache structures sequentially inside the main execution thread
+        for nc_path in cached_nc_paths:
+            with xr.open_dataset(nc_path) as ds_cache:
+                fire_name = ds_cache.attrs['fire_name']
                 
-                raw_frp_fc = ds_f['FRP'].values[min_fcx:max_fcx+1, min_fcy:max_fcy+1, :]
-                Nt_fc = len(fc_hours)
+                # Collect timelines into dictionaries mapping time string to value
+                data_by_type = {}
+                all_timestamps = set()
                 
-                masked_totals = np.zeros(Nt_fc)
-                for t in range(Nt_fc):
-                    grid_z = griddata(
-                        (lon_fc_crop.ravel(), lat_fc_crop.ravel()), 
-                        raw_frp_fc[:, :, t].ravel(), 
-                        (lon_RAVE_crop, lat_RAVE_crop), 
-                        method='linear'
-                    )
-                    masked_totals[t] = np.nansum(grid_z[frp_mask])
+                for label, coordinate_dim, dataset_var in [
+                    ('fc_yesterday', 'time_fc0', 'fc_yesterday'),
+                    ('fc_latest', 'time_fc1', 'fc_latest'),
+                    ('fc_hybrid', 'time_hybrid', 'fc_hybrid')
+                ]:
+                    time_axis_st = [str(t) for t in ds_cache[coordinate_dim].values]
+                    data_values = ds_cache[dataset_var].values
+                    
+                    data_by_type[label] = pd.Series(data_values, index=time_axis_st)
+                    all_timestamps.update(time_axis_st)
                 
-                frp_forecast_int_masked.append(masked_totals)
+                # Align data across all unique timestamps for this specific fire
+                sorted_timestamps = sorted(list(all_timestamps))
+                fire_ts_df = pd.DataFrame(index=sorted_timestamps)
+                fire_ts_df['fc_yesterday'] = fire_ts_df.index.map(data_by_type['fc_yesterday'])
+                fire_ts_df['fc_latest'] = fire_ts_df.index.map(data_by_type['fc_latest'])
+                fire_ts_df['fc_hybrid'] = fire_ts_df.index.map(data_by_type['fc_hybrid'])
+                
+                # Set up the multi-key structure: fire_name and time
+                fire_ts_df.index.name = 'time'
+                fire_ts_df = fire_ts_df.reset_index()
+                fire_ts_df.insert(0, 'fire_name', fire_name)
+                
+                timeseries_list.append(fire_ts_df)
 
-        # ==========================================
-        # PHASE 5: HYBRID PREDICTION SYNTHESIS STAGE
-        # ==========================================
-        time_forecast_hybrid = time_forecast[1]
-        frp_forecast_hybrid = np.full(time_forecast_hybrid.shape, np.nan)
-        
-        try:
-            idx_fc1_pivot = list(time_forecast[0]).index(date_mask_rave_dt)
-            idx_fc2_pivot = list(time_forecast[1]).index(date_mask_rave_dt)
-        except ValueError:
-            print(f"[-] Warning: Time axes are misaligned for {fire_name}. Skipping hybrid step.")
-            continue
+        # Combine all individual fires into a single master time series dataframe
+        if timeseries_list:
+            master_ts_df = pd.concat(timeseries_list, ignore_index=True)
+            # Set the keys (fire_name, time) as the multi-index
+            master_ts_df.set_index(['fire_name', 'time'], inplace=True)
+            
+            # Save to a dedicated file
+            predictions_output_csv = os.path.join(out_dir, "fire_predictions_timeseries.csv")
+            master_ts_df.to_csv(predictions_output_csv)
+            print(f"[+] Multi-key prediction time series saved to: {predictions_output_csv}")
+            if os.path.exists(cache_dir):
+                print("[*] Cleaning up intermediate cache tracking workspace directories...")
+                shutil.rmtree(cache_dir)
+                return predictions_output_csv
+        else:
+            print("[!] No prediction datasets found to compile.")
 
-        historical_rave_sample = frp_timeseries[max(0, idx_rave_pivot-24):idx_rave_pivot]
-        fc1_reference_sample = frp_forecast_int_masked[0][max(0, idx_fc1_pivot-24):idx_fc1_pivot]
-        
-        # Fill hybrid sequences safely across available forecast horizons
-        scaling_ratio = np.nanmean(frp_forecast_int_masked[1][idx_fc2_pivot:idx_fc2_pivot+24]) / np.nanmean(fc1_reference_sample)
-        frp_forecast_hybrid[idx_fc2_pivot:idx_fc2_pivot+24] = historical_rave_sample * scaling_ratio
-        
-        scaling_ratio_day2 = np.nanmean(frp_forecast_int_masked[1][idx_fc2_pivot+24:idx_fc2_pivot+48]) / np.nanmean(fc1_reference_sample)
-        frp_forecast_hybrid[idx_fc2_pivot+24:idx_fc2_pivot+48] = historical_rave_sample * scaling_ratio_day2
-
-        # ==========================================
-        # PHASE 6: DIAGNOSTIC GRAPH GENERATION
-        # ==========================================
-        plt.figure(figsize=(6, 4))
-        plt.plot(rave_timeline, frp_timeseries, '-b', label='RAVE Observations')
-        
-        colors = ['k', 'r']
-        for i in range(len(forecast_files)):
-            plt.plot(time_forecast[i], frp_forecast_int_masked[i], f"-{colors[i]}", 
-                     label=f"Forecast {forecast_dates[i].strftime('%m/%d %H')}Z")
-                     
-        plt.plot(time_forecast_hybrid, frp_forecast_hybrid, '-g', 
-                 label=f"Forecast {forecast_dates[1].strftime('%m/%d %H')}Z Hybrid")
-        
-        plt.xlabel('Date')
-        plt.ylabel('Total Fire FRP [MW]')
-        plt.legend(loc='upper left', fontsize=8)
-        plt.grid(True, linestyle='--', alpha=0.5)
-        plt.xticks(rotation=30)
-        plt.tight_layout()
-        
-        plt.savefig(f"figs/frp_rave_vs_prediction_{fire_name}.png", dpi=300)
-        plt.close()
-
-        # ==========================================
-        # PHASE 7: BROAD DATA OUTPUT SYNCHRONIZATION
-        # ==========================================
-        csv_out_path = f"csv/rave_frp_{fire_name}.csv"
-        records_df = pd.DataFrame({
-            'timestamp': [t.strftime('%Y-%m-%d %H:%M:%S') for t in rave_timeline],
-            'rave_frp_mw': np.nan_to_num(frp_timeseries, nan=0.0).astype(int)
-        })
-        records_df.to_csv(csv_out_path, index=False)
-        
-        # Merge calculated arrays into columns within the unified file dataframe
-        for label, t_axis, data_v in [
-            ('fc_yesterday', time_forecast[0], frp_forecast_int_masked[0]),
-            ('fc_latest', time_forecast[1], frp_forecast_int_masked[1]),
-            ('fc_hybrid', time_forecast_hybrid, frp_forecast_hybrid)
-        ]:
-            col_name = f"{fire_name}_{label}"
-            val_map = {t.strftime('%Y-%m-%d %H:%M:%S'): val for t, val in zip(t_axis, data_v)}
-            fire_df[col_name] = fire_df.get('t_start', pd.Series(dtype=str)).map(val_map)
-
-    # Save data updates back down to your pipeline storage target manifest
-    fire_df.to_csv(fire_polygon_file, index=False)
-    print(f"[+] All procedures concluded successfully. Master manifest tracking updated at: {fire_polygon_file}")
+    except Exception as exc:
+        print(f"[-] Critical failure inside pipeline loop executor: {exc}")
+        raise exc
+    finally:
+        # Complete file deletion tracking cleanup of temporary intermediate NetCDF caches
+        if os.path.exists(cache_dir):
+            print("[*] Cleaning up intermediate cache tracking workspace directories...")
+            shutil.rmtree(cache_dir)
+            return None
 
 if __name__ == "__main__":
     # Context-aware real-time dynamic analysis harness execution
-    execute_predictive_fire_pipeline(target_date_str="20260623", run_downloads=True)
+    target_dt = config.now_dt
+    execute_predictive_fire_pipeline(target_dt = target_dt)
