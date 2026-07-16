@@ -1,83 +1,103 @@
 import os
+from os.path import join as os_join
+from os.path import exists as os_exists
 import shutil
 
 from analysis.mapping.pft_gen_parallel import pull_data, group_client_dses, \
                                         calc_pfts, calc_soundings, \
-                                        parse_to_dataframe, CACHE_BASE_DIR
+                                        parse_to_dataframe
 import analysis.mapping.config as config
 from analysis.mapping.copy_util import upload_simplified
 from analysis.mapping.signal_cache import SignalCache
-from analysis.canadian_frp_prediction import execute_predictive_fire_pipeline
+from analysis.mapping.rave_oper_client import RAVEOperClient
+from analysis.mapping.canadian_frp_prediction import execute_predictive_fire_pipeline
 
-# run_dashboard.py updates[cite: 3]
-def run_pipeline():
-    print("=== STEP 1: Ingesting Atmospheric Data ===")
-    dtime = config.now_date
-    lat = config.lats
-    lon = config.lons
-    fxx_range = config.fxx_range
-    fxx_freq = config.fxx_freq
-    clients = config.clients
-    fx_names = config.fx_names
-    max_workers = config.max_workers
-    cmap_name = config.cmap_name
+from utils.io_utils import safe_copy, CACHE_BASE_DIR
 
-    fire_fetch_class = config.active_fire_class
+def _copy_current(fname):
+    if not config.DEBUG_MODE:
+        safe_copy(os_join(config.today_dir, fname), 
+              os_join(config.current_dir, fname))
 
-    csv_fname = 'fire_pipeline_manifest.csv'
-    csv_current_dir = os.path.join(CACHE_BASE_DIR, 'active_fires', 'current')
-    csv_today_dir = os.path.join(CACHE_BASE_DIR, 'active_fires', config.date_name.replace('-','_'))
-    os.makedirs(csv_today_dir, exist_ok=True)
+def FETCH():
+    print('fetching active fire polygons...')
+    fire_geojson = config.active_fire_class()\
+                            .fetch_fires(csv_path = os_join(config.today_dir, 
+                                                            config.active_fire_fname))
+    _copy_current(config.active_fire_fname)
+    return fire_geojson
 
-    # 1. Fetch Today's Fires[cite: 1]
-    print("Fetching active fire perimeters...")
-    data_pipeline = fire_fetch_class()
-    fire_geojson = data_pipeline.fetch_fires(days_back=1, csv_path = os.path.join(csv_today_dir, csv_fname))
-    canadian_frp_csv = execute_predictive_fire_pipeline(target_dt = config.now_dt)
-    os.makedirs(csv_today_dir, exist_ok=True)
-    shutil.copy(os.path.join(csv_today_dir, csv_fname), os.path.join(csv_current_dir, csv_fname))
-    print(f"copied current fires to {os.path.join(csv_current_dir, csv_fname)}")
+def RAVE():
+    print('pulling rave values for active fires...')
+    pipeline = RAVEOperClient(csv_path = os_join(config.today_dir, config.active_fire_fname),
+                   download_dir = config.rave_cache,
+                   output_csv = os_join(config.today_dir, config.active_rave_fn))
+    downloaded_files = pipeline.download_rave_files(last_n_days=config.rave_lookback, 
+                                                    reference_date=config.now_dt)
+    pipeline.extract_frp_data_parallel_files(downloaded_files, config.max_workers)
+    _copy_current(config.active_rave_fn)
 
-    # Execute your parallel processing pipeline
-    dses = pull_data(dtime, lat, lon, fxx_range, clients, max_workers, fxx_freq)
-    client_dses = group_client_dses(dses, fx_names)
-    cache = SignalCache(db_path=f"{CACHE_BASE_DIR}/db/sounding_pipeline_cache.db")
-    
-    try:
-        # Phase 1: Compute soundings and offload straight to disk
-        calc_soundings(client_dses, max_workers, cache)
-        
-        # Phase 2: Pull out of disk sequentially and compute PFTs
-        pfts = calc_pfts(cache, max_workers)
-        
-       # Generate your active predictive dataframe
-        print("[+] Meteorological matrix calculation complete.")
-        df_pfts_calculated = parse_to_dataframe(pfts)
-        
-        # Hand the dataset directly to your dashboard tracking maps
-        df_pfts_calculated.to_csv(os.path.join(csv_current_dir, 'pft_data.csv'))
-        df_pfts_calculated.to_csv(os.path.join(csv_today_dir, 'pft_data.csv'))
-        
-        # 2. Compile Map with PFT Mesh and Fire Layers[cite: 1]
-        print("Compiling spatiotemporal map...")
-        data_pipeline.compile_integrated_map(
-            geojson_data=fire_geojson,
-            pft_df=df_pfts_calculated,
-            output_html=config.OUTPUT_HTML,
-            cmap_name=cmap_name
-        )
+def FRP_CAN():
+    print('running canadian frp prediction...')
+    frp_csv = execute_predictive_fire_pipeline( target_dt = config.now_dt, 
+                                                out_dir = config.today_dir)
+    _copy_current(config.can_frp_fname)
+    return frp_csv
 
-        html_fname = config.OUTPUT_HTML.split(os.path.sep)[-1]
-        upload_simplified(config.OUTPUT_HTML, os.path.join(config.REMOTE_DIR, html_fname),
+def DB():
+    print('generating pft sounding database...')
+    dses = pull_data(config.now_date, config.lats, config.lons, 
+                     config.fxx_range, config.clients, 
+                     config.max_workers, config.fxx_freq)
+    client_dses = group_client_dses(dses, config.fx_names)
+    cache = SignalCache(db_path=os_join(config.today_dir, config.snd_cache_fn))
+    calc_soundings(client_dses, config.max_workers, cache)
+    return cache
+
+def PFT(cache):
+    print('calculating active pfts...')
+    pfts = calc_pfts(cache, config.max_workers)
+    df_pfts_calculated = parse_to_dataframe(pfts)
+    df_pfts_calculated.to_csv(os_join(config.today_dir, config.pft_fname), index = False)
+    _copy_current(config.pft_fname)
+
+def MAP():
+    print('generating html file...')
+    config.active_fire_class().compile_integrated_map(
+        geojson_path = os_join(config.today_dir, config.active_fire_fname.replace('.csv', '.json')),
+        pft_path = os_join(config.today_dir, config.pft_fname),
+        output_html = os_join(config.today_dir, config.html_fname),
+        cmap_name = config.cmap_name,
+        frp_csv_path = os_join(config.today_dir, config.can_frp_fname)
+    )
+    _copy_current(config.html_fname)
+
+    upload_simplified(  os_join(config.today_dir, config.html_fname), 
+                        os_join(config.REMOTE_DIR, config.html_fname),
                         hostname = config.HOSTNAME, username=config.USERNAME)
-        if not config.DEBUG_MODE:
-            upload_simplified(config.OUTPUT_HTML, os.path.join(config.REMOTE_DIR, "latest.html"),
-                            hostname = config.HOSTNAME, username=config.USERNAME)
+    if not config.DEBUG_MODE:
+        upload_simplified(os_join(config.today_dir, config.html_fname), 
+                          os_join(config.REMOTE_DIR, "latest.html"),
+                          hostname = config.HOSTNAME, username=config.USERNAME)
 
-    finally:
-        # Phase 3: Cleanup database completely to leave zero disk clutter
-        cache.destroy()
-    
+def run_pipeline():
+    if not os_exists(os_join(config.today_dir, config.active_fire_fname)):
+        print('missing active fire polygons.')
+        FETCH()
+        RAVE()
+        FRP_CAN()
+    if not os_exists(os_join(config.today_dir, config.active_rave_fn)):
+        print('missing active fire rave values.')
+        RAVE()
+        FRP_CAN()
+    if not os_exists(os_join(config.today_dir, config.can_frp_fname)):
+        print('missing active fire frp predictions.')
+        FRP_CAN()
+    if not os_exists(os_join(config.today_dir, config.pft_fname)):
+        print('missing pft mesh.')
+        cache = DB()
+        PFT(cache)
+    MAP()
 
 if __name__ == "__main__":
     run_pipeline()

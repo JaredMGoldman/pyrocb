@@ -1,9 +1,12 @@
 from abc import ABC, abstractmethod
 import base64
 import io
+import json
 import numpy as np
 import pandas as pd
+import matplotlib
 import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
 import matplotlib.colors as mcolors
 from scipy.interpolate import griddata
 import folium
@@ -17,6 +20,73 @@ import analysis.mapping.config as config
 from analysis.mapping.timeslider_choropleth_utc import TimeSliderChoropleth as TimeSliderChoroplethUTC
 
 
+def _worker_render_single_plot_frp(feature, frp_csv_path):
+    """
+    Isolated worker function running inside ProcessPoolExecutor.
+    Matches the GeoJSON feature name to the FRP prediction timeseries CSV 
+    (swapping spaces for underscores) and returns a base64 HTML string of the plot.
+    """
+    matplotlib.use('Agg')  # Ensure non-interactive backend inside process pools
+    
+    props = feature.get("properties", {})
+    fire_key = props.get("fire_index_id", "UNKNOWN")
+    fire_name_raw = props.get("name", fire_key)
+    
+    try:
+        # Load the FRP predictions timeseries dataset
+        frp_df = pd.read_csv(frp_csv_path)
+        
+        # Filter rows matching this specific fire name
+        fire_sub = frp_df[frp_df['fire_idx'] == fire_key].copy()
+        
+        if fire_sub.empty:
+            return fire_key, f"<p style='color:gray;'>No FRP forecast data available for {fire_name_raw}.</p>"
+        
+        # Format timeline index
+        fire_sub['time'] = pd.to_datetime(fire_sub['time'])
+        fire_sub = fire_sub.sort_values('time')
+        
+        # Setup plot canvas
+        fig, ax = plt.subplots(figsize=(5, 3))
+        
+        has_plot = False
+        if 'fc_yesterday' in fire_sub.columns and not fire_sub['fc_yesterday'].isna().all():
+            ax.plot(fire_sub['time'], fire_sub['fc_yesterday'], color='black', linestyle='--', alpha=0.7, label='Yesterday 06Z')
+            has_plot = True
+        if 'fc_latest' in fire_sub.columns and not fire_sub['fc_latest'].isna().all():
+            ax.plot(fire_sub['time'], fire_sub['fc_latest'], color='red', linestyle='-', linewidth=1.2, label='Latest 06Z')
+            has_plot = True
+        if 'fc_hybrid' in fire_sub.columns and not fire_sub['fc_hybrid'].isna().all():
+            ax.plot(fire_sub['time'], fire_sub['fc_hybrid'], color='green', linestyle='-', linewidth=1.8, label='Hybrid Blend')
+            has_plot = True
+            
+        if not has_plot:
+            plt.close(fig)
+            return fire_key, f"<p style='color:gray;'>FRP data coordinates are empty for {fire_name_raw}.</p>"
+            
+        ax.set_title(f"FRP Forecast Trend: {fire_name_raw}", fontsize=9, fontweight='bold')
+        ax.set_ylabel("Total FRP [MW]", fontsize=8)
+        ax.grid(True, linestyle=':', alpha=0.6)
+        ax.legend(loc='upper left', fontsize=7)
+        ax.tick_params(axis='both', labelsize=7)
+        ax.xaxis.set_major_locator(mdates.HourLocator(interval=config.plot_freq))
+        ax.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d %H:%M'))
+        plt.xticks(rotation=20)
+        plt.tight_layout()
+        
+        # Save figure context to memory buffer as Base64 HTML string
+        buf = io.BytesIO()
+        plt.savefig(buf, format='png', dpi=150)
+        buf.seek(0)
+        encoded = base64.b64encode(buf.read()).decode('utf-8')
+        plt.close(fig)
+        
+        chart_html = f'<img src="data:image/png;base64,{encoded}" style="max-width:100%; height:auto;">'
+        return fire_key, chart_html
+        
+    except Exception as e:
+        return fire_key, f"<p style='color:red;'>Error generating FRP plot: {str(e)}</p>"
+
 def _worker_render_single_plot(feature, pft_df, fx_name):
     """
     Isolated worker function running inside ProcessPoolExecutor.
@@ -24,17 +94,16 @@ def _worker_render_single_plot(feature, pft_df, fx_name):
     per timestamp, and returns a base64 HTML string of the line plot.
     """
     geom = feature.get("geometry")
-    fire_id = feature.get("properties", {}).get("fireid", "UNKNOWN")
+    fire_key = feature.get("properties", {}).get("fire_index_id", "UNKNOWN")
     
     if not geom:
-        return fire_id, "<p>No spatial geometry available for plot generation.</p>"
+        return fire_key, "<p>No spatial geometry available for plot generation.</p>"
     
     try:
         fire_poly = shape(geom)
     except Exception:
-        return fire_id, "<p>Error parsing fire geometry.</p>"
+        return fire_key, "<p>Error parsing fire geometry.</p>"
 
-    # 1. Filter PFT data points spatially using bounding box first (for speed)
     lon_min, lat_min, lon_max, lat_max = fire_poly.bounds
     bbox_mask = (
         (pft_df['lon'] >= lon_min) & (pft_df['lon'] <= lon_max) &
@@ -51,7 +120,7 @@ def _worker_render_single_plot(feature, pft_df, fx_name):
     # Step B: Fallback nearest point lookup if no points are strictly inside
     if fire_pft.empty:
         if pft_df.empty:
-            return fire_id, "<p style='color:gray;'>No PFT data points available in the dataset.</p>"
+            return fire_key, "<p style='color:gray;'>No PFT data points available in the dataset.</p>"
             
         distances = pft_df.apply(lambda row: fire_poly.distance(Point(row['lon'], row['lat'])), axis=1)
         nearest_idx = distances.idxmin()
@@ -60,7 +129,7 @@ def _worker_render_single_plot(feature, pft_df, fx_name):
         fire_pft = pft_df[coordinate_mask].copy()
 
     if fire_pft.empty:
-        return fire_id, "<p style='color:gray;'>No PFT metrics found overlaying or near this polygon footprint.</p>"
+        return fire_key, "<p style='color:gray;'>No PFT metrics found overlaying or near this polygon footprint.</p>"
 
     # 2. Group by time and calculate average PFT track over the window
     time_series = fire_pft.groupby('time')['value'].mean().sort_index()
@@ -70,16 +139,17 @@ def _worker_render_single_plot(feature, pft_df, fx_name):
     fig.patch.set_facecolor("#FFFFFF")
     ax.set_facecolor("#FFFFFF")
     
-    x_labels = [pd.to_datetime(t).strftime('%m/%d %H:%M') for t in time_series.index]
+    x_labels = pd.to_datetime([pd.to_datetime(t).strftime('%m/%d %H:%M') for t in time_series.index])
     ax.plot(x_labels, time_series.values, color='#e74c3c', linewidth=2, marker='o', markersize=4)
     
     ax.set_title(f"PFT {fx_name.upper()} Prediction", color='black', fontsize=10, fontweight='bold')
     ax.set_ylabel("log PFT Value (GW)", color='black', fontsize=8)
     ax.set_yscale('log')
     ax.tick_params(colors='black', labelsize=7)
+    ax.xaxis.set_major_locator(mdates.HourLocator(interval=config.plot_freq))
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d %H:%M'))
     ax.grid(True, color='#444444', linestyle='--', alpha=0.5)
     
-    fig.autofmt_xdate()
     plt.xticks(rotation=30, ha='right')
     plt.tight_layout()
 
@@ -92,7 +162,7 @@ def _worker_render_single_plot(feature, pft_df, fx_name):
     # Encode binary to clean base64 HTML image tag string
     base64_img = base64.b64encode(buf.read()).decode('utf-8')
     html_img_tag = f'<img src="data:image/png;base64,{base64_img}" width="450" height="250">'
-    return fire_id, html_img_tag
+    return fire_key, html_img_tag
 
 
 class FireMapBase(ABC):
@@ -251,11 +321,18 @@ class FireMapBase(ABC):
         """
         return legend_html
 
-    def compile_integrated_map(self, geojson_data, pft_df, output_html="weekly_fire_map.html", cmap_name='autumn'):
+    def compile_integrated_map(self, geojson_path, pft_path, 
+                               output_html="weekly_fire_map.html", 
+                               cmap_name='autumn', frp_csv_path = 'cache'):
         """
         Builds a spatiotemporal hourly-precision grid of PFT values over land mass 
         with floating legends and static fire vectors embedding dynamic trend popups.
         """
+        print("Compiling spatiotemporal map...")
+        with open(geojson_path, 'r') as f:
+            geojson_data = json.load(f)
+        pft_df = pd.read_csv(pft_path)
+
         m = folium.Map(location=[45, -100], zoom_start=4, tiles="CartoDB positron")
         
         if pft_df.empty:
@@ -342,37 +419,48 @@ class FireMapBase(ABC):
         m.get_root().html.add_child(folium.Element(legend_html_content))
 
         if geojson_data and geojson_data.get("features"):
-            # 1. Create ONE single FeatureGroup container for all active fires
-            # This collapses the entire UI menu mess down to a single clean toggle
             fires_layer_group = folium.FeatureGroup(name="Active Fires", show=True)
             features_list = geojson_data["features"]
 
             print(f"[+] Launching parallel rendering across worker pools for {len(features_list)} fires...")
             
             # 2. Parallel Generation Stage: Distribute processing across CPU nodes
-            chart_lookup = {}
+            pft_chart = {}
+            frp_chart = {}
             with ProcessPoolExecutor(max_workers=config.max_workers) as executor:
                 futures = [
                     executor.submit(_worker_render_single_plot, feat, clean_pft, config.fx_names[0])
                     for feat in features_list
                 ]
                 
-                for f in tqdm.tqdm(as_completed(futures), total=len(features_list), desc="Parallel Popup Render"):
-                    fire_id, chart_html = f.result()
-                    chart_lookup[fire_id] = chart_html
+                for f in tqdm.tqdm(as_completed(futures), total=len(features_list), desc="PFT Popup Plots"):
+                    fire_key, chart_html = f.result()
+                    pft_chart[fire_key] = chart_html
+                
+                futures = [
+                    executor.submit(_worker_render_single_plot_frp, feat, frp_csv_path) 
+                    for feat in features_list
+                ]
 
-            # 3. Synchronous Mapping Compilation Stage
-            # Building Folium objects is very fast now that the heavy chart-generation math is pre-computed
+                for future in tqdm.tqdm(as_completed(futures), total=len(futures), desc="FRP Popup Plots"):
+                    try:
+                        f_key, html_str = future.result()
+                        frp_chart[f_key] = html_str
+                    except Exception as e:
+                        print(f"[-] A worker process thread failed: {e}")
+
             for feature in features_list:
                 props = feature.get("properties", {})
                 
+                f_key = props.get("fire_index_id", None)
                 f_name = props.get('name', 'Unknown')
                 f_id = props.get('fireid', 'N/A')
                 f_start = props.get('t_start', 'N/A')
                 f_status = props.get('status', 'N/A')
 
                 # Pull the pre-compiled base64 chart layout directly from the lookup dictionary
-                chart_html = chart_lookup.get(f_id, "<p style='color:gray;'>Error generating plot data.</p>")
+                pft_html = pft_chart.get(f_key, "<p style='color:gray;'>Error generating plot data.</p>")
+                frp_html = frp_chart.get(f_key, "<p style='color:gray;'>Error generating plot data.</p>")
 
                 # Build dark-themed popup card structural wrapper
                 popup_content = f"""
@@ -384,7 +472,10 @@ class FireMapBase(ABC):
                         <tr><td><b>Status:</b></td><td>{f_status}</td></tr>
                     </table>
                     <div style="text-align: center;">
-                        {chart_html}
+                        {pft_html}
+                    </div>
+                    <div style="text-align: center;">
+                        {frp_html}
                     </div>
                 </div>
                 """

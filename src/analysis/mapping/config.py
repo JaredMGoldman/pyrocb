@@ -1,6 +1,8 @@
 # config.py
 import matplotlib.colors as mcolors
 from datetime import datetime
+import os
+from os.path import join as os_join
 import pandas as pd
 
 from analysis.mapping.active_incident_map import ActiveFirePerimeterPipeline
@@ -23,20 +25,32 @@ now_dt = pd.Timestamp("2026-06-01") if DEBUG_MODE else pd.Timestamp(datetime.now
 forecast_time = "06:00"
 date_name = f"{now_dt.year}-{make_n_len_str(now_dt.month)}-{make_n_len_str(now_dt.day)}"
 now_date = f"{now_dt.year}-{make_n_len_str(now_dt.month)}-{make_n_len_str(now_dt.day)} {forecast_time}"
+date_str = f"{now_dt.year}-{now_dt.month}-{now_dt.day}_06Z"
+
+rave_lookback = 3
 fxx_range = 48 if DEBUG_MODE else 72
 fxx_freq = 2
 plot_freq = 6
 clients =  [GFSClient] if DEBUG_MODE else [RRFSClient]
 fx_names = [GFS] if DEBUG_MODE else [RRFS]
 active_fire_class = ActiveFirePerimeterPipeline
-max_workers = 38
+max_workers = 48
 
 cmap_name = 'viridis'
 
-date_str = f"{now_dt.year}-{now_dt.month}-{now_dt.day}_00Z"
+current_dir = os_join(CACHE_BASE_DIR, 'active_fires', 'current')
+today_dir = os_join(CACHE_BASE_DIR, 'active_fires', date_name.replace('-','_'))
+rave_cache = os_join(today_dir, '.rave_downloads')
 
-OUTPUT_HTML = f"{CACHE_BASE_DIR}/folium/pft_fire_map_{date_str}.html"
-CSV_MANIFEST = f"{CACHE_BASE_DIR}/folium/fire_pipeline_manifest_{date_str}.csv"
+html_fname = f"pft_fire_map_{date_str}.html"
+active_rave_fn = 'active_rave_timeseries.csv'
+active_fire_fname = 'fire_pipeline_manifest.csv'
+can_frp_fname = 'fire_predictions_timeseries.csv'
+snd_cache_fn = "sounding_pipeline_cache.db"
+pft_fname = "pft_data.csv"
+
+os.makedirs(today_dir, exist_ok=True)
+os.makedirs(current_dir, exist_ok=True)
 
 # Stable Asset CDNs to prevent Leaflet/Jinja2 freezing bugs
 TIMEDIMENSION_ASSETS = {

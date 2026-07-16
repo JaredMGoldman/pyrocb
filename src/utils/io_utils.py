@@ -16,9 +16,20 @@ import rasterio
 import pyproj
 from datetime import datetime, timezone
 import uuid
+import shutil
 from shapely.ops import transform
 import pyproj
 
+def safe_copy(src_path, dest_path):
+    try:
+        shutil.copy(src_path,dest_path)
+        print(f"[+] copied {src_path} to {dest_path}")
+        return dest_path
+    
+    except Exception as e:
+        print(f"[-] failed to copy {src_path} to {dest_path} with exception: {e}")
+        return None
+    
 def make_run_id() -> str:
     # Example: run_20260226T235901Z_5f2c9c3a0b8c4d8aa2a1a0f5b7b20d3e
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")

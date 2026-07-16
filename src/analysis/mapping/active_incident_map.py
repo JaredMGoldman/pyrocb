@@ -2,6 +2,8 @@ import requests
 import pandas as pd
 from datetime import datetime
 from shapely.ops import transform
+import json
+import os
 import pyproj
 from functools import partial
 from shapely.geometry import shape
@@ -267,7 +269,7 @@ class ActiveFirePerimeterPipeline(FireMapBase):
                         "country": "CAN"
                     }
                 })
-
+        standardized = [item for item in standardized if item['properties']['name'] != "UNKNOWN_CA_ID"]
         print(f"[+] Successfully structured and resolved {len(standardized)} pooled Canadian tracks.")
         return standardized
 
@@ -281,7 +283,10 @@ class ActiveFirePerimeterPipeline(FireMapBase):
             return None
 
         records = []
-        for feature in geojson_data["features"]:
+        for idx, feature in enumerate(geojson_data.get("features", [])):
+            # --- TWO-LINE INDEX INJECTION FIX ---
+            fire_index_key = f"fire_idx_{idx}"
+            feature["properties"]["fire_index_id"] = fire_index_key
             props = feature.get("properties", {})
             geom = feature.get("geometry", None)
             
@@ -317,6 +322,7 @@ class ActiveFirePerimeterPipeline(FireMapBase):
                 # Append metrics plus new operational control records
                 records.append({
                     "fire_id": fire_id,
+                    "fire_index_id": fire_index_key,
                     "name": props.get("name", "UNKNOWN"),
                     "country": props.get("country", "UNKNOWN"),
                     "status": props.get("status", "Active"),
@@ -333,12 +339,14 @@ class ActiveFirePerimeterPipeline(FireMapBase):
         if records:
             df = pd.DataFrame(records)
             df = df.sort_values(by="peak_area_km2", ascending=False)
+            df = df[df['peak_area_km2'] > 10].reset_index(drop=True)
+            df = df.drop(df[df.name == "UNKNOWN_CA_ID"].index).reset_index(drop=True)
             df.to_csv(output_csv, index=False)
             print(f"[+] Active fire statistical inventory saved successfully: '{output_csv}'")
             return df
         return None
 
-    def fetch_fires(self, days_back = 1, csv_path="active_fires_summary.csv", only_active=False):
+    def fetch_fires(self, csv_path="active_fires_summary.csv", only_active=False):
         """
         Primary execution entry point. Combines cleaned US and Canadian vector layers,
         filters by operational status if requested, and saves the global statistical inventory.
@@ -361,5 +369,6 @@ class ActiveFirePerimeterPipeline(FireMapBase):
         
         # Export processed results to the final CSV data model layout
         self.export_fire_statistics_csv(geojson_res, output_csv=csv_path)
-        
+        with open(csv_path.replace('.csv', '.json'), 'w') as f:
+            json.dump(geojson_res, f)
         return geojson_res

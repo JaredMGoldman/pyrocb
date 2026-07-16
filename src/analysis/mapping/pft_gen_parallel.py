@@ -421,6 +421,7 @@ def calc_pfts(cache_system, max_workers):
                         futures.add(ppex.submit(pft_worker_direct, next(record_stream)))
                     except StopIteration:
                         pass
+    print("[+] Meteorological matrix calculation complete.")
     return pfts
 
 def query_worker(client, date, lat, lon, fxx):
@@ -428,7 +429,7 @@ def query_worker(client, date, lat, lon, fxx):
 
 def pull_data(date, lat, lon, fxx_range, clients, max_workers, fxx_freq = 1):
     dses = []
-    max_workers_capped = max_workers if max_workers <= 20 else 20
+    max_workers_capped = max_workers if max_workers <= 12 else 12
     print(f"running data pulling with {max_workers_capped} workers")
     with ProcessPoolExecutor(max_workers_capped) as ppex:
         futures = []
