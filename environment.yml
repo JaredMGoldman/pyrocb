@@ -22,7 +22,6 @@ dependencies:
   - h5netcdf
   - herbie-data
   - bottleneck
-  - earthaccess
   - zarr
   - fsspec
   - jupyter
@@ -33,3 +32,4 @@ dependencies:
     - affine
     - rasterio
     - rioxarray
+    - earthaccess
