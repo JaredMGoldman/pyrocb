@@ -1,20 +1,16 @@
 import os
-import glob
-import analysis.mapping.config as config
 import urllib.request
 from datetime import datetime, timedelta
 import numpy as np
 import pandas as pd
 import xarray as xr
 import matplotlib.pyplot as plt
-from scipy.interpolate import griddata
 from shapely.wkt import loads
 import shutil
 import concurrent.futures
 
-# Import the programmatic internal data API directly
-from data.clients.rave_client import RAVEClient
-from utils.constants import CACHE_BASE_DIR
+import analysis.mapping.config as config
+
 
 # ==========================================
 # PHASE 1: AUTOMATED DATA RETRIEVAL (CANADIAN)
@@ -26,7 +22,7 @@ def download_canadian_forecasts(target_date_str, output_dir):
     Uses atomic writing and header verification to prevent corrupt .nc files.
     """
     os.makedirs(output_dir, exist_ok=True)
-    current_dt = datetime.strptime(target_date_str, "%Y%m%d") - timedelta(days=1)
+    current_dt = datetime.strptime(target_date_str, "%Y%m%d")
     yesterday_dt = current_dt - timedelta(days=1)
     
     urls = [
@@ -38,6 +34,9 @@ def download_canadian_forecasts(target_date_str, output_dir):
     for url in urls:
         filename = os.path.basename(url)
         dest_path = os.path.join(output_dir, filename)
+        if os.path.exists(dest_path):
+            print(f"[+] {dest_path} is cached skipping {url} download")
+            continue
         tmp_path = dest_path + ".tmp"
         req = urllib.request.Request(
             url, 
@@ -49,18 +48,19 @@ def download_canadian_forecasts(target_date_str, output_dir):
                 # Check if the server is returning an HTML webpage instead of raw data
                 content_type = response.headers.get('Content-Type', '').lower()
                 if 'text/html' in content_type:
-                    print(f"[-] File not yet available on server for this date. (Server returned HTML instead of NetCDF). Skipping.")
+                    print(f"[-] File not yet available on server for {url}. (Server returned HTML instead of NetCDF). Skipping.")
                     # Do not save this file to dest_path
                     continue
 
                 # If it's a valid binary stream, write it directly to the temporary file
-                print(f"[+] Server confirmed valid dataset. Downloading content...")
+                print(f"[+] Server confirmed valid dataset. Downloading content from {url}...")
 
                 with open(tmp_path, 'wb') as tmp_file:
                     shutil.copyfileobj(response, tmp_file)
 
             # Move the validated temporary file to its final destination path
             os.replace(tmp_path, dest_path)
+            print(f"[+] saved {url} to {dest_path}")
             downloaded_files.append(dest_path)
 
         except Exception as e:
@@ -178,23 +178,10 @@ def process_single_fire(args):
         from shapely.geometry import box
         poly_geom = box(lon_verts.min(), lat_verts.min(), lon_verts.max(), lat_verts.max())
 
-    # Programmatically retrieve RAVE data directly from API subset routines
-    # try:
-    #     rave_ds = rave_api()._query(
-    #         polygon=poly_geom,
-    #         start=date_i_dt.strftime('%Y-%m-%d %H:%M'),
-    #         end=date_f_dt.strftime('%Y-%m-%d %H:%M'),
-    #         variables=["FRP_MEAN", "FRE"],
-    #         drop_outside=True
-    #     )
-    # except Exception as e:
-    #     print(f"    [-] RAVE Client query processing error skipped for {fire_name}: {e}")
-    #     return None
-
     rave_df = pd.read_csv(os.path.join(out_dir, config.active_rave_fn))
     this_df = rave_df[rave_df.fire_index_id == fire_idx].sort_values('timestamp')
     frp_timeseries = this_df['total_rave_frp'].to_numpy(copy=True)
-    # frp_timeseries[frp_timeseries == 0] = np.nan
+
     rave_timeline = [pd.to_datetime(t) for t in this_df['timestamp'].values]
 
     # Map Canadian Forecasting windows onto target spatial crops bounding box
@@ -281,13 +268,6 @@ def process_single_fire(args):
     # ==========================================
     # PHASE 7: LOCAL FILE SYNC AND NETCDF CACHING
     # ==========================================
-    # csv_out_path = f"{out_dir}/rave_frp_{fire_idx}.csv"
-    # records_df = pd.DataFrame({
-    #     'timestamp': [t.strftime('%Y-%m-%d %H:%M:%S') for t in rave_timeline],
-    #     'rave_frp_mw': np.nan_to_num(frp_timeseries, nan=0.0).astype(int)
-    # })
-    # records_df.to_csv(csv_out_path, index=False)
-    
     # Store output data arrays inside a temporary xarray Dataset object
     ds_cache = xr.Dataset(
         data_vars=dict(
@@ -314,8 +294,7 @@ def process_single_fire(args):
 # PHASE 3: CORE PREDICTIVE EXECUTIVE PIPELINE
 # ==========================================
 
-def execute_predictive_fire_pipeline(target_dt, out_dir = f"{CACHE_BASE_DIR}/ca_frp",
-                                     plot_fires = False, num_days = 3):
+def execute_predictive_fire_pipeline(target_dt, out_dir = "./ca_frp"):
     """
     Consolidated operational function replacing the original multi-step MATLAB execution loop.
     Integrates the programmatic RAVEClient API to extract data directly.
@@ -329,8 +308,6 @@ def execute_predictive_fire_pipeline(target_dt, out_dir = f"{CACHE_BASE_DIR}/ca_
     ]
     
     # Establish running timeframe context anchors
-    date_i_dt = target_dt - timedelta(days=num_days)
-    date_f_dt = target_dt + timedelta(days=num_days)
     date_mask_rave_dt = target_dt + timedelta(hours=6) # 06Z forecast mark
     
     fire_polygon_file = os.path.join(out_dir, 'fire_pipeline_manifest.csv')
@@ -387,7 +364,6 @@ def execute_predictive_fire_pipeline(target_dt, out_dir = f"{CACHE_BASE_DIR}/ca_
     
     print(f"[*] Dispatching grid interpolation calculations to ProcessPoolExecutor...")
     try:
-        process_single_fire(worker_tasks[0])
         with concurrent.futures.ProcessPoolExecutor(max_workers=config.max_workers) as executor:
             # Map retains tracking index sequence integrity natively
             results = executor.map(process_single_fire, worker_tasks)
