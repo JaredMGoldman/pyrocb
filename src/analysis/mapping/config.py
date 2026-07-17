@@ -21,7 +21,7 @@ DEBUG_MODE = False
 # Network & Server Options
 SERVER_PORT = 8650
 
-now_dt = pd.Timestamp("2026-06-01") if DEBUG_MODE else pd.Timestamp(datetime.now())
+now_dt = pd.Timestamp("2026-06-01") if DEBUG_MODE else pd.Timestamp(datetime.today().strftime("%Y%m%d"))
 forecast_time = "06:00"
 date_name = f"{now_dt.year}-{make_n_len_str(now_dt.month)}-{make_n_len_str(now_dt.day)}"
 now_date = f"{now_dt.year}-{make_n_len_str(now_dt.month)}-{make_n_len_str(now_dt.day)} {forecast_time}"
