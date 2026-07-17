@@ -23,7 +23,7 @@ class GFSClient(BaseClient):
     
     def _query_worker(self, date, lat, lon, fxx):
         if fxx % 3 != 0:
-            print(f"invalid forecast hour for {self.__class__.__name__}: {fxx}")
+            # print(f"invalid forecast hour for {self.__class__.__name__}: {fxx}")
             return None
         ts = pd.to_datetime(date)
         month = f"{ts.year}{self._make_n_len_str(ts.month, 2)}"

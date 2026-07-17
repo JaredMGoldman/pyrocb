@@ -1,4 +1,5 @@
 from utils.logging_utils import *
+import numpy as np
 from pathlib import Path
 import requests
 import shutil
@@ -74,29 +75,31 @@ class BaseClient(ABC):
         self.logger.info(f'cleaning up {self.__class__.__name__} cache')
         shutil.rmtree(self.save_dir)
 
-    def _subset_dataset(self, lat, lon, ds, pool_n = None):
-        if type(lat) == list:
+    def _subset_dataset(self, lat, lon, ds, pool_n=None):
+        if isinstance(lat, list):
             lat_min, lat_max = lat
             lon_min, lon_max = lon
             
-            lat_slice = slice(lat_min, lat_max) if ds.latitude[0] < ds.latitude[-1] else slice(lat_max, lat_min)
-            lon_slice = slice(lon_min, lon_max) if ds.longitude[0] < ds.longitude[-1] else slice(lon_max, lon_min)
-            target = ds.sel(latitude=lat_slice, longitude=lon_slice)
-            if (not pool_n is None) and (pool_n > 1):
-                # (Matches whether they are named 'latitude'/'longitude' or 'y'/'x')
+            # 1. Generate boolean array masks along your coordinates
+            lat_mask = (ds.latitude >= lat_min) & (ds.latitude <= lat_max)
+            lon_mask = (ds.longitude >= lon_min) & (ds.longitude <= lon_max)
+            
+            # 2. Subset using .where() and drop the outer non-matching grid cells
+            target = ds.where(lat_mask & lon_mask, drop=True)
+            
+            if (pool_n is not None) and (pool_n > 1):
+                # Dynamically resolve dimension strings ('latitude'/'longitude' or 'y'/'x')
                 lat_dim = target.latitude.dims[0]
                 lon_dim = target.longitude.dims[0]
                 
-                # boundary='trim' drops any fractional remainder rows/columns at the edge 
-                # if the sliced dimension length isn't perfectly divisible by n.
-                coarsen_dict = {lat_dim: pool_n, lon_dim: pool_n}
-                
-                target = target.coarsen(
-                    coarsen_dict, 
-                    boundary="trim"
-                ).mean()
+                # Ensure the dataset isn't smaller than the coarsen pooling factor
+                if target.sizes[lat_dim] >= pool_n and target.sizes[lon_dim] >= pool_n:
+                    coarsen_dict = {lat_dim: pool_n, lon_dim: pool_n}
+                    target = target.coarsen(coarsen_dict, boundary="trim").mean()
         else:
+            # Point fallback
             target = ds.sel(latitude=lat, longitude=lon, method="nearest")
+            
         return target
 
     def _make_n_len_str(self, value, n):

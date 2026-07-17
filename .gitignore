@@ -6,6 +6,7 @@ outputs/*.csv
 outputs/*
 src/data/cp.h5
 src/data/cp_poly.gpkg
+src/data/clients/earthaccess.netrc
 data/cp.5
 data/cp_poly.gpkg
 data/cp_poly.csv
@@ -16,3 +17,4 @@ src/data/clients/*.netrc
 *cache*
 */cache*
 */*/*/*cache*
+!src/analysis/mapping/signal_cache.py

@@ -287,23 +287,25 @@ def plot_spatiotemporal_data(df, output_dir="./plots", save_df = True, plot_data
             plt.close(fig) 
             print(f"Saved: {filename}")
 
+def _yield_sounding_args(ds_dict):
+    """
+    Generates data pointers on-the-fly. 
+    Replaces your huge 'all_args = []' allocation loop to preserve master process memory.
+    """
+    for name, ds in ds_dict.items():
+        keys = list(ds.keys())
+        for key_val in keys:
+            # Safely verify time dimension limits without copying sub-arrays
+            num_times = len(ds[key_val]['time'])
+            for t_idx in range(num_times):
+                yield (ds[key_val], key_val, t_idx, name)
+
+
+# --- WORKER: REMAIN UNCHANGED APART FROM PASSING THROUGH RESULTS ---
 def sounding_worker(ds, key_val, t_idx, name):
-    unused_vars_prf =  ['stid', 'stnm', 'lat', 'lon', 
-                    'elevation', 'leadTime', 'show', 
-                    'li', 'swet', 'kinx', 'pwat', 
-                    'totl', 'cape', 'lclt', 'cin',  
-                    'wbt', 'thetaE', 'windDir', 
-                    'eql', 'lfc', 'brch',
-                    'windSpd', 'omega', 'cloud']
-    unused_vars_sfc = [
-            'station', 'time', 'pmsl', 'pres','skin_temp',
-            'soil_temp1', 'soil_temp2', 'snow', 'soil_moist',
-            'precip', 'conv_precip', 'lcld', 'mcld', 'hcld',
-            'snow_ratio', 'uWind', 'vWind', 'runoff',
-            'baseflow', 'q_2', 'snow_pres', 'fzra_pres', 
-            'ip_pres', 'rain_pres', 'u_storm', 'v_storm',
-            'helicity', 'evap', 'cloud_base_p', 'visibility', 
-            ]
+    # (Keeping your original inner math logic clean and identical)
+    unused_vars_prf = ['stid', 'stnm', 'lat', 'lon', 'elevation', 'leadTime', 'show', 'li', 'swet', 'kinx', 'pwat', 'totl', 'cape', 'lclt', 'cin', 'wbt', 'thetaE', 'windDir', 'eql', 'lfc', 'brch', 'windSpd', 'omega', 'cloud']
+    unused_vars_sfc = ['station', 'time', 'pmsl', 'pres','skin_temp','soil_temp1', 'soil_temp2', 'snow', 'soil_moist','precip', 'conv_precip', 'lcld', 'mcld', 'hcld','snow_ratio', 'uWind', 'vWind', 'runoff','baseflow', 'q_2', 'snow_pres', 'fzra_pres', 'ip_pres', 'rain_pres', 'u_storm', 'v_storm','helicity', 'evap', 'cloud_base_p', 'visibility']
     unused_kwargs_prf = {varname : tuple([None]) for varname in unused_vars_prf}
     unused_kwargs_sfc = {varname : None for varname in unused_vars_sfc}
 
@@ -317,58 +319,117 @@ def sounding_worker(ds, key_val, t_idx, name):
         gh = ds['gh'][t_idx,:]
         if np.isnan(gh).all():
             return None
-        dpt = np.array(dewpoint_from_relative_humidity( t * units.kelvin,
-                                r / 100.0).to(units.degC))
         
-        lcl_vals = np.array(lcl(levels * units.hPa, 
-                                t * units.K,
-                                dpt * units.degC)[0])
+        dpt = np.array(dewpoint_from_relative_humidity(t * units.kelvin, r / 100.0).to(units.degC))
+        lcl_vals = np.array(lcl(levels * units.hPa, t * units.K, dpt * units.degC)[0])
         t_vals = np.array((t * units.K).to(units.degC))
-        profile = Profile(time = tuple([times[t_idx]]),
-                        lcl = tuple(lcl_vals),
-                        pressure = tuple(levels),
-                        temp = tuple(t_vals),
-                        dewpoint = tuple(dpt),
-                        uWind = tuple(u),
-                        vWind = tuple(v),
-                        hgt = tuple(gh),
-                        **unused_kwargs_prf)
-        sfc = Surface(  temp = t_vals[0],
-                        dewpoint = dpt[0],
-                        **unused_kwargs_sfc)
+        
+        profile = Profile(time=tuple([times[t_idx]]), lcl=tuple(lcl_vals), pressure=tuple(levels), temp=tuple(t_vals), dewpoint=tuple(dpt), uWind=tuple(u), vWind=tuple(v), hgt=tuple(gh), **unused_kwargs_prf)
+        sfc = Surface(temp=t_vals[0], dewpoint=dpt[0], **unused_kwargs_sfc)
         snd = Sounding(profile, sfc)
     except:
         return None
     return (snd, (key_val, times[t_idx], name))
 
-def calc_soundings(ds_dict, max_workers):
-    all_soundings = []
-    with ProcessPoolExecutor(max_workers = max_workers, mp_context=mp.get_context('fork')) as ppex:
-        futures = []
-        tot_futures = 0
-        all_args = []
-        for name, ds in ds_dict.items():
-            all_soundings = []
-            keys = [key_val  for key_val in ds.keys()]
-            for key_val in keys:
-                for t_idx in range(len(ds[keys[0]]['time'])):
-                    tot_futures += 1
-                    spec_args = (ds[key_val], key_val, t_idx, name)
-                    all_args.append(spec_args)
 
-        futures.extend([ppex.submit(sounding_worker, *args) for args in all_args])
-        for f in tqdm.tqdm(as_completed(futures), total = tot_futures, desc = "sounding formatting"):
-            out = f.result()
-            if out is not None:
-                all_soundings.append(out)
-    return all_soundings
+# --- FIX 2: BATCHED DISK EMISSION IN CALC_SOUNDINGS ---
+def calc_soundings(ds_dict, max_workers, cache_system):
+    """
+    Submits futures iteratively via a lazy generator, streaming outputs 
+    directly to a memory-mapped database cache instead of retaining millions of Python objects.
+    """
+    # Calculate exact totals beforehand for the tqdm display progress track
+    tot_futures = sum(len(ds[k]['time']) for name, ds in ds_dict.items() for k in ds.keys())
+    
+    with ProcessPoolExecutor(max_workers=max_workers, mp_context=mp.get_context('fork')) as ppex:
+        # Step A: Feed the pool via the lazy generator loop to protect master RAM
+        arg_generator = _yield_sounding_args(ds_dict)
+        
+        # Keep an active window of futures in memory so we don't saturate memory queues
+        futures = {ppex.submit(sounding_worker, *args) for args in [next(arg_generator) for _ in range(min(tot_futures, max_workers * 4))]}
+        
+        write_buffer = []
+        
+        with tqdm.tqdm(total=tot_futures, desc="Sounding Formatting") as pbar:
+            while futures:
+                # Process elements as they cross the computing line
+                done, futures = futures.copy(), set()
+                # Wait for any to finish
+                for f in as_completed(done):
+                    out = f.result()
+                    pbar.update(1)
+                    if out is not None:
+                        write_buffer.append(out)
+                        
+                        # Periodically flush objects out of memory to keep RAM perfectly flat
+                        if len(write_buffer) >= 25000:
+                            cache_system.append_batch(write_buffer)
+                            write_buffer = [] # Clears pointers immediately for Garbage Collection
+                    
+                    # Refill queue seamlessly with remaining items
+                    try:
+                        futures.add(ppex.submit(sounding_worker, *next(arg_generator)))
+                    except StopIteration:
+                        pass
+            
+            # Flush tail remnants
+            if write_buffer:
+                cache_system.append_batch(write_buffer)
+
+
+# --- FIX 3: BULK REAM STREAMING WORKER ---
+def pft_worker_direct(sounding_payload):
+    """
+    Accepts the direct payload unpacked out of the binary database index stream.
+    """
+    (snd, (key_val, time, name)) = sounding_payload
+    time_dt = pd.to_datetime(snd.profile.time[0], format='%y%m%d/%H%M')
+    pft_val = pft(snd, moisture_ratio=10.0, fire_elevation=0)
+    return ((time_dt, pft_val), (key_val, name))
+
+
+def calc_pfts(cache_system, max_workers):
+    """
+    Streams records out of the database chunk-by-chunk to keep memory footprints low.
+    """
+    pfts = []
+    
+    # We use a processing window pool to prevent piling up futures backlogs in RAM
+    with ProcessPoolExecutor(max_workers=max_workers) as ppex:
+        record_stream = cache_system.stream_records(chunk_size=50000)
+        futures = set()
+        
+        # Fill primary buffer window
+        for _ in range(max_workers * 4):
+            try:
+                futures.add(ppex.submit(pft_worker_direct, next(record_stream)))
+            except StopIteration:
+                break
+                
+        with tqdm.tqdm(desc="PFT Calculation") as pbar:
+            while futures:
+                done = list(as_completed(futures))
+                for f in done:
+                    futures.remove(f)
+                    out = f.result()
+                    pbar.update(1)
+                    if out is not None:
+                        pfts.append(out)
+                        
+                    # Refill the pool tracking pipeline dynamically
+                    try:
+                        futures.add(ppex.submit(pft_worker_direct, next(record_stream)))
+                    except StopIteration:
+                        pass
+    print("[+] Meteorological matrix calculation complete.")
+    return pfts
 
 def query_worker(client, date, lat, lon, fxx):
     return client().parallel_query(date = date, lat = lat, lon = lon, fxx = fxx)
 
 def pull_data(date, lat, lon, fxx_range, clients, max_workers, fxx_freq = 1):
     dses = []
-    max_workers_capped = max_workers if max_workers <= 20 else 20
+    max_workers_capped = max_workers if max_workers <= 12 else 12
     print(f"running data pulling with {max_workers_capped} workers")
     with ProcessPoolExecutor(max_workers_capped) as ppex:
         futures = []
@@ -478,88 +539,3 @@ def group_client_dses(
         out_dses[name] = merge_parallel_payloads(single_payloads, features)
 
     return out_dses
-
-
-def pft_worker(sounding_fp):
-    (snd, (key_val, time, name)) = load(sounding_fp)
-    time = pd.to_datetime(snd.profile.time[0], format='%y%m%d/%H%M')
-    pft_val = pft(snd, moisture_ratio=10.0, fire_elevation=0) # TODO: parameterize fire elevation
-    return ((time, pft_val), (key_val, name))
-
-def calc_pfts(soundings, max_workers):
-    pfts = []
-    with ProcessPoolExecutor(max_workers = max_workers) as ppex:
-        futures = [ppex.submit(pft_worker, snd) for snd in soundings]
-        for f in tqdm.tqdm(as_completed(futures), total = len(soundings), desc = "pft calculation"):
-            out = f.result()
-            if out is not None:
-                pfts.append(out)
-    return pfts
-
-if __name__ == "__main__":
-    max_workers = 36
-    fxx_range = 24
-    clients = [ERA5PLClient] #, GFSClient, NAMClient, ECMWFClient, GFSHistClient ]
-
-    all_dates = []
-    days = ["%02d" % (int(i),) for i in range(1,32)]
-    for year in [f"{i}" for i in range(1940,2025)]:
-        for month in ["06", "07", "08"]:
-            for day in days:
-                if int(day) % 2 == 0:
-                    continue
-                if day == "31" and month == "06":
-                    continue
-                this_date = f"{year}-{month}-{day}"
-                all_dates.append(this_date)
-    lat = [24.846565, 71.300793]
-    lon = [-166.992188, -52.031250]
-    
-    forecast_names = [ERA5] #, GFS, NAM, ECMWF]
-    out_dir_base = os.path.join(PLOTS_DIR, 'pfts', ERA5.lower())
-    failed_dates = []
-    for dtime in tqdm.tqdm(all_dates, desc = "all dates"):
-        try:
-            if os.path.exists(os.path.join(out_dir_base, dtime, 'pft_vals.csv')):
-                print(f"already processed: {os.path.join(out_dir_base, dtime, 'pft_vals.csv')}")
-                continue
-            print(f"evaluating time: {dtime}")
-            start_time = datetime.now()
-            
-
-            dses = pull_data(dtime, lat, lon, fxx_range, clients, max_workers)
-            
-            client_dses = group_client_dses(dses, forecast_names)
-            data_time = datetime.now()
-            data_stopwatch = data_time-start_time
-            print(f"\nfinished pulling data in {data_stopwatch} secs")
-
-            soundings = calc_soundings(client_dses, max_workers)
-            
-            sounding_time = datetime.now()
-            sounding_stopwatch = sounding_time - data_time
-            print(f"\nfinished formatting soundings in {sounding_stopwatch} secs")
-            pfts = calc_pfts(soundings, max_workers)
-
-            pft_time = datetime.now()
-            pft_stopwatch = pft_time - sounding_time
-            print(f"\nfinished pft calculation in {pft_stopwatch} secs")
-
-            df = parse_to_dataframe(pfts)
-            plot_spatiotemporal_data(df, os.path.join(out_dir_base, dtime))
-            plot_time = datetime.now()
-            plot_stopwatch = plot_time - pft_time
-            
-            print("\nTIME SUMMARY")
-            print("__________________________________")
-            print(f"| DATA ACCESS   | {data_stopwatch} |")
-            print(f"| SOUNDING FMT  | {sounding_stopwatch} |")
-            print(f"| PFT TIME      | {pft_stopwatch} |")
-            print(f"| PLOT TIME     | {plot_stopwatch} |")
-            print(f"| TOTAL TIME    | {plot_time - start_time} |")
-            print("----------------------------------")
-        except Exception as e:
-            failed_dates.append(dtime)
-            print(e)
-            continue
-    print(f"failed dates:\n{failed_dates}")

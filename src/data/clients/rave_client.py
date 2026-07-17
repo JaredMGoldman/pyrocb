@@ -128,10 +128,12 @@ class RAVEClient(BaseClient):
 
             # clip
             ds = self._subset_to_polygon(ds, polygon, drop_outside=drop_outside, bbox_first=bbox_first)
-
-            ds['FRP_SD'] = ds['FRP_SD'] ** 2
-            ds = ds.sum(dim = ('grid_yt', 'grid_xt'))
-            ds['FRP_SD'] = np.sqrt(ds['FRP_SD'])
+            if 'FRP_SD' in ds.data_vars:
+                ds['FRP_SD'] = ds['FRP_SD'] ** 2
+                ds = ds.sum(dim = ('grid_yt', 'grid_xt'))
+                ds['FRP_SD'] = np.sqrt(ds['FRP_SD'])
+            else:
+                ds = ds.sum(dim = ('grid_yt', 'grid_xt'))
             dsets.append(ds)
 
         if not dsets:
