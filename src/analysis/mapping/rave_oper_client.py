@@ -10,6 +10,7 @@ import sys
 import xarray as xr
 import rioxarray
 from shapely import wkt
+from tqdm import tqdm as timer
 from typing import Tuple, Union
 
 from utils.io_utils import CACHE_BASE_DIR
@@ -39,7 +40,7 @@ curl_body = \
 def _infer_lat_lon_names(ds: xr.Dataset) -> Tuple[str, str]:
     lat_names: Tuple[str, ...] = ("lat", "latitude", "LAT", "Latitude", "y", "grid_latt")
     lon_names: Tuple[str, ...] = ("lon", "longitude", "LON", "Longitude", "x", "grid_lont")
-    time_names: Tuple[str, ...] = ("time", "valid_time", "datetime", "date")
+
     lat = next((n for n in lat_names if n in ds.coords or n in ds.variables), None)
     lon = next((n for n in lon_names if n in ds.coords or n in ds.variables), None)
     if lat is None or lon is None:
@@ -373,7 +374,6 @@ class RAVEOperClient:
                             "total_rave_frp": total_frp
                         })
                     except (ValueError, rioxarray.exceptions.NoDataInBounds):
-                        import ipdb; ipdb.set_trace()
                         # Geometric non-overlap or empty array after clipping
                         results.append({
                             "fire_index_id": fire_id,
@@ -386,39 +386,8 @@ class RAVEOperClient:
             
         return results
 
-    def extract_frp_data(self, file_paths: list[Path], max_workers: int = 4):
-        """
-        Parses NetCDF files in parallel to compute total FRP per fire per hourly interval.
-        Saves output to a structured CSV.
-        """
-        print(f"Extracting FRP data in parallel across {max_workers} processes/threads...")
-        all_records = []
-
-        self._process_single_nc(file_paths[0])
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {executor.submit(self._process_single_nc, path): path for path in file_paths}
-            for future in as_completed(futures):
-                records = future.result()
-                if records:
-                    all_records.extend(records)
-
-        if not all_records:
-            print("No FRP records extracted.")
-            return
-
-        # Build output dataframe
-        df_output = pd.DataFrame(all_records)
-        
-        # Sort values nicely for readability
-        df_output = df_output.sort_values(by=['fire_index_id', 'timestamp'])
-        
-        # Export
-        df_output.to_csv(self.output_csv, index=False)
-        print(f"Data processing complete! Saved final metrics to: {self.output_csv}")
-
     def _parse_geometries(self):
         """Parses manifest data into clean, serializable structures."""
-        print("Preparing fire geometries for serialization...")
         self.df_manifest = self.df_manifest.dropna(subset=['wkt_geometry', 'fire_index_id'])
         
         # Convert to a lightweight list of dicts to pass easily to worker processes
@@ -429,14 +398,10 @@ class RAVEOperClient:
         Alternative extraction method. 
         Spins up independent worker processes. Each process is dedicated to an individual 
         NetCDF file, looping through all target fires internally.
-        """
-        print(f"Launched ProcessPoolExecutor with {max_workers} processes.")
-        print(f"Distributing {len(file_paths)} files across processes...")
-        
+        """        
         all_records = []
 
         # We use ProcessPoolExecutor so each worker runs on a native CPU core bypasses the GIL
-        _process_file_multiprocessing_worker(file_paths[0], self.serialized_fires)
         with ProcessPoolExecutor(max_workers=max_workers) as executor:
             # Submit each file to its own process
             futures = {
@@ -444,13 +409,12 @@ class RAVEOperClient:
                 for path in file_paths
             }
             
-            for i, future in enumerate(as_completed(futures), 1):
+            for future in timer(as_completed(futures), desc="RAVE nc processing", total = len(futures)):
                 file_path = futures[future]
                 try:
                     records = future.result()
                     if records:
                         all_records.extend(records)
-                    print(f"[{i}/{len(file_paths)}] Successfully processed: {file_path.name}")
                 except Exception as e:
                     print(f"Failed to process file {file_path.name}: {e}")
 
@@ -460,10 +424,16 @@ class RAVEOperClient:
 
         # Export compiled records to CSV
         df_output = pd.DataFrame(all_records)
-        df_output = df_output.sort_values(by=['fire_index_id', 'timestamp'])
+        df_output = df_output.sort_values(by=['fire_index_id', 'timestamp']).reset_index(drop = True)
+        zero_frp_mask = df_output.groupby('fire_index_id')['total_rave_frp'].sum() == 0
+        zero_frp_fires = zero_frp_mask[zero_frp_mask].index.tolist()
+
+        print(f"[*] identified and removing {len(zero_frp_fires)} inactive fires")
+        df_output = df_output[~df_output.fire_index_id.isin(zero_frp_fires)].reset_index(drop = True)
         df_output.to_csv(self.output_csv, index=False)
         
-        print(f"Data processing complete! Saved final metrics to: {self.output_csv}")
+        print(f"[*] Data processing complete! Saved final metrics to: {self.output_csv}")
+        return zero_frp_fires
 
 
 # --- Execution Hook ---
@@ -486,6 +456,5 @@ if __name__ == "__main__":
     # (Computationally intensive; keep workers close to physical CPU cores)
     if downloaded_files:
         pipeline.extract_frp_data_parallel_files(downloaded_files, max_workers = 25)
-        # pipeline.extract_frp_data(downloaded_files, max_workers=4)
     else:
         print("No files were downloaded. Pipeline skipped.")

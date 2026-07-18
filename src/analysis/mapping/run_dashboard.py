@@ -7,12 +7,13 @@ from analysis.mapping.pft_gen_parallel import pull_data, group_client_dses, \
                                         calc_pfts, calc_soundings, \
                                         parse_to_dataframe
 import analysis.mapping.config as config
+from analysis.mapping.active_incident_map import prune_inactive_fires
 from analysis.mapping.copy_util import upload_simplified
 from analysis.mapping.signal_cache import SignalCache
 from analysis.mapping.rave_oper_client import RAVEOperClient
 from analysis.mapping.canadian_frp_prediction import execute_predictive_fire_pipeline
 
-from utils.io_utils import safe_copy, CACHE_BASE_DIR
+from utils.io_utils import safe_copy
 
 def _copy_current(fname):
     if not config.DEBUG_MODE:
@@ -21,11 +22,10 @@ def _copy_current(fname):
 
 def FETCH():
     print('fetching active fire polygons...')
-    fire_geojson = config.active_fire_class()\
-                            .fetch_fires(csv_path = os_join(config.today_dir, 
-                                                            config.active_fire_fname))
+    config.active_fire_class()\
+            .fetch_fires(csv_path = os_join(config.today_dir, 
+                                            config.active_fire_fname))
     _copy_current(config.active_fire_fname)
-    return fire_geojson
 
 def RAVE():
     print('pulling rave values for active fires...')
@@ -34,7 +34,11 @@ def RAVE():
                    output_csv = os_join(config.today_dir, config.active_rave_fn))
     downloaded_files = pipeline.download_rave_files(last_n_days=config.rave_lookback, 
                                                     reference_date=config.now_dt)
-    pipeline.extract_frp_data_parallel_files(downloaded_files, config.max_workers)
+    dropped_fires = pipeline.extract_frp_data_parallel_files(downloaded_files, config.max_workers)
+    prune_inactive_fires(dropped_fires,
+                         os_join(config.today_dir, 
+                                 config.active_fire_fname))
+                        
     _copy_current(config.active_rave_fn)
 
 def FRP_CAN():
@@ -64,7 +68,7 @@ def PFT(cache):
 def MAP():
     print('generating html file...')
     config.active_fire_class().compile_integrated_map(
-        geojson_path = os_join(config.today_dir, config.active_fire_fname.replace('.csv', '.json')),
+        manifest_path= os_join(config.today_dir, config.active_fire_fname), 
         pft_path = os_join(config.today_dir, config.pft_fname),
         output_html = os_join(config.today_dir, config.html_fname),
         cmap_name = config.cmap_name,

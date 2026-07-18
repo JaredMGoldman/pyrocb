@@ -8,8 +8,19 @@ import pyproj
 from functools import partial
 from shapely.geometry import shape
 from shapely import Point
+import shutil
 
 from analysis.mapping.fire_map_base import FireMapBase
+
+def prune_inactive_fires(inactive_fires, active_fire_csv_path):
+    shutil.copy(active_fire_csv_path, active_fire_csv_path.replace('.csv', '_superset.csv'))
+
+    active_fire_df = pd.read_csv(active_fire_csv_path)
+
+    new_fire_df = active_fire_df[~active_fire_df.fire_index_id.isin(inactive_fires)].reset_index(drop=True)
+
+    new_fire_df.to_csv(active_fire_csv_path, index=False)
+    print("[+] subsetted csv data to active fires")
 
 class ActiveFirePerimeterPipeline(FireMapBase):
     def __init__(self, *args, **kwargs):
@@ -369,6 +380,3 @@ class ActiveFirePerimeterPipeline(FireMapBase):
         
         # Export processed results to the final CSV data model layout
         self.export_fire_statistics_csv(geojson_res, output_csv=csv_path)
-        with open(csv_path.replace('.csv', '.json'), 'w') as f:
-            json.dump(geojson_res, f)
-        return geojson_res

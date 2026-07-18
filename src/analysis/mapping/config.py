@@ -6,8 +6,6 @@ from os.path import join as os_join
 import pandas as pd
 
 from analysis.mapping.active_incident_map import ActiveFirePerimeterPipeline
-from analysis.mapping.firms_pft_pipeline import FirmsPftLandmaskedPipeline
-from analysis.mapping.veda_pft_pipeline import VedaPftLandmaskedPipeline
 
 from data.clients.gfs_client import GFSClient, GFS
 from data.clients.rrfs_client import RRFSClient, RRFS

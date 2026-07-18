@@ -10,6 +10,7 @@ import matplotlib.dates as mdates
 import matplotlib.colors as mcolors
 from scipy.interpolate import griddata
 import folium
+import shapely
 from shapely.geometry import shape, mapping, Polygon, Point
 from shapely import STRtree
 from shapely.ops import nearest_points
@@ -22,17 +23,13 @@ import analysis.mapping.config as config
 from analysis.mapping.timeslider_choropleth_utc import TimeSliderChoropleth as TimeSliderChoroplethUTC
 
 
-def _worker_render_single_plot_frp(feature, frp_csv_path):
+def _worker_render_single_plot_frp(fire_key, frp_csv_path):
     """
     Isolated worker function running inside ProcessPoolExecutor.
     Matches the GeoJSON feature name to the FRP prediction timeseries CSV 
     (swapping spaces for underscores) and returns a base64 HTML string of the plot.
     """
     matplotlib.use('Agg')  # Ensure non-interactive backend inside process pools
-    
-    props = feature.get("properties", {})
-    fire_key = props.get("fire_index_id", "UNKNOWN")
-    fire_name_raw = props.get("name", fire_key)
     
     try:
         # Load the FRP predictions timeseries dataset
@@ -42,7 +39,7 @@ def _worker_render_single_plot_frp(feature, frp_csv_path):
         fire_sub = frp_df[frp_df['fire_idx'] == fire_key].copy()
         
         if fire_sub.empty:
-            return fire_key, f"<p style='color:gray;'>No FRP forecast data available for {fire_name_raw}.</p>"
+            return fire_key, f"<p style='color:gray;'>No FRP forecast data available for {fire_key}.</p>"
         
         # Format timeline index
         fire_sub['time'] = pd.to_datetime(fire_sub['time'])
@@ -61,12 +58,15 @@ def _worker_render_single_plot_frp(feature, frp_csv_path):
         if 'fc_hybrid' in fire_sub.columns and not fire_sub['fc_hybrid'].isna().all():
             ax.plot(fire_sub['time'], fire_sub['fc_hybrid'], color='green', linestyle='-', linewidth=1.8, label='Hybrid Blend')
             has_plot = True
+        if 'rave_historical' in fire_sub.columns and not fire_sub['rave_historical'].isna().all():
+            ax.plot(fire_sub['time'], fire_sub['rave_historical'], color='gray', linestyle='-', linewidth=1.8, label='RAVE Observations')
+            has_plot = True
             
         if not has_plot:
             plt.close(fig)
-            return fire_key, f"<p style='color:gray;'>FRP data coordinates are empty for {fire_name_raw}.</p>"
+            return fire_key, f"<p style='color:gray;'>FRP data coordinates are empty for {fire_key}.</p>"
             
-        ax.set_title(f"FRP Forecast Trend: {fire_name_raw}", fontsize=9, fontweight='bold')
+        ax.set_title(f"FRP Forecast Trend: {fire_key}", fontsize=9, fontweight='bold')
         ax.set_ylabel("Total FRP [MW]", fontsize=8)
         ax.grid(True, linestyle=':', alpha=0.6)
         ax.legend(loc='upper left', fontsize=7)
@@ -89,12 +89,11 @@ def _worker_render_single_plot_frp(feature, frp_csv_path):
     except Exception as e:
         return fire_key, f"<p style='color:red;'>Error generating FRP plot: {str(e)}</p>"
 
-def _worker_render_single_plot(feature, subset_df, fx_name):
+def _worker_render_single_plot(fire_key, subset_df, fx_name):
     """
     Isolated worker function running inside ProcessPoolExecutor.
     Receives a tiny, pre-sliced subset_df and renders the line plot.
     """
-    fire_key = feature.get("properties", {}).get("fire_index_id", "UNKNOWN")
     
     if subset_df.empty:
         return fire_key, "<p style='color:gray;'>No PFT metrics found overlaying or near this footprint.</p>"
@@ -130,84 +129,6 @@ def _worker_render_single_plot(feature, subset_df, fx_name):
     base64_img = base64.b64encode(buf.read()).decode('utf-8')
     html_img_tag = f'<img src="data:image/png;base64,{base64_img}" width="450" height="250">'
     return fire_key, html_img_tag
-
-# def _worker_render_single_plot(feature, pft_df, fx_name):
-#     """
-#     Isolated worker function running inside ProcessPoolExecutor.
-#     Finds PFT data points within or near a single fire polygon, averages values 
-#     per timestamp, and returns a base64 HTML string of the line plot.
-#     """
-#     geom = feature.get("geometry")
-#     fire_key = feature.get("properties", {}).get("fire_index_id", "UNKNOWN")
-    
-#     if not geom:
-#         return fire_key, "<p>No spatial geometry available for plot generation.</p>"
-    
-#     try:
-#         fire_poly = shape(geom)
-#     except Exception:
-#         return fire_key, "<p>Error parsing fire geometry.</p>"
-
-#     lon_min, lat_min, lon_max, lat_max = fire_poly.bounds
-#     bbox_mask = (
-#         (pft_df['lon'] >= lon_min) & (pft_df['lon'] <= lon_max) &
-#         (pft_df['lat'] >= lat_min) & (pft_df['lat'] <= lat_max)
-#     )
-#     candidate_pft = pft_df[bbox_mask].copy()
-#     fire_pft = pd.DataFrame()
-    
-#     # Step A: True containment check
-#     if not candidate_pft.empty:
-#         is_inside = candidate_pft.apply(lambda row: fire_poly.contains(Point(row['lon'], row['lat'])), axis=1)
-#         fire_pft = candidate_pft[is_inside]
-
-#     # Step B: Fallback nearest point lookup if no points are strictly inside
-#     if fire_pft.empty:
-#         if pft_df.empty:
-#             return fire_key, "<p style='color:gray;'>No PFT data points available in the dataset.</p>"
-            
-#         distances = pft_df.apply(lambda row: fire_poly.distance(Point(row['lon'], row['lat'])), axis=1)
-#         nearest_idx = distances.idxmin()
-#         nearest_point_row = pft_df.loc[nearest_idx]
-#         coordinate_mask = (pft_df['lon'] == nearest_point_row['lon']) & (pft_df['lat'] == nearest_point_row['lat'])
-#         fire_pft = pft_df[coordinate_mask].copy()
-
-#     if fire_pft.empty:
-#         return fire_key, "<p style='color:gray;'>No PFT metrics found overlaying or near this polygon footprint.</p>"
-
-#     # 2. Group by time and calculate average PFT track over the window
-#     time_series = fire_pft.groupby('time')['value'].mean().sort_index()
-
-#     # 3. Render the matplotlib chart entirely in-memory
-#     fig, ax = plt.subplots(figsize=(4.5, 2.5), dpi=100)
-#     fig.patch.set_facecolor("#FFFFFF")
-#     ax.set_facecolor("#FFFFFF")
-    
-#     x_labels = pd.to_datetime([pd.to_datetime(t).strftime('%m/%d %H:%M') for t in time_series.index])
-#     ax.plot(x_labels, time_series.values, color='#e74c3c', linewidth=2, marker='o', markersize=4)
-    
-#     ax.set_title(f"PFT {fx_name.upper()} Prediction", color='black', fontsize=10, fontweight='bold')
-#     ax.set_ylabel("log PFT Value (GW)", color='black', fontsize=8)
-#     ax.set_yscale('log')
-#     ax.tick_params(colors='black', labelsize=7)
-#     ax.xaxis.set_major_locator(mdates.HourLocator(interval=config.plot_freq))
-#     ax.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d %H:%M'))
-#     ax.grid(True, color='#444444', linestyle='--', alpha=0.5)
-    
-#     plt.xticks(rotation=30, ha='right')
-#     plt.tight_layout()
-
-#     # Save to a byte buffer object
-#     buf = io.BytesIO()
-#     plt.savefig(buf, format='png', facecolor=fig.get_facecolor(), edgecolor='none')
-#     plt.close(fig)
-#     buf.seek(0)
-    
-#     # Encode binary to clean base64 HTML image tag string
-#     base64_img = base64.b64encode(buf.read()).decode('utf-8')
-#     html_img_tag = f'<img src="data:image/png;base64,{base64_img}" width="450" height="250">'
-#     return fire_key, html_img_tag
-
 
 class FireMapBase(ABC):
     def __init__(self):
@@ -365,7 +286,7 @@ class FireMapBase(ABC):
         """
         return legend_html
 
-    def compile_integrated_map(self, geojson_path, pft_path, 
+    def compile_integrated_map(self, pft_path, manifest_path,
                                output_html="weekly_fire_map.html", 
                                cmap_name='autumn', frp_csv_path = 'cache'):
         """
@@ -373,8 +294,7 @@ class FireMapBase(ABC):
         with floating legends and static fire vectors embedding dynamic trend popups.
         """
         print("Compiling spatiotemporal map...")
-        with open(geojson_path, 'r') as f:
-            geojson_data = json.load(f)
+        fire_manifest_df = pd.read_csv(manifest_path)
         pft_df = pd.read_csv(pft_path)
 
         m = folium.Map(location=[45, -100], zoom_start=4, tiles="CartoDB positron")
@@ -462,19 +382,23 @@ class FireMapBase(ABC):
         legend_html_content = self._generate_html_legend(vmin, vmax, cmap_name=cmap_name)
         m.get_root().html.add_child(folium.Element(legend_html_content))
 
-        if geojson_data and geojson_data.get("features"):
-            pft_points = [Point(lon, lat) for lon, lat in zip(clean_pft['lon'], clean_pft['lat'])]
+        
+        if not type(fire_manifest_df) is None:
+            pft_points = []
+            for lon, lat in tqdm.tqdm(zip(clean_pft['lon'], clean_pft['lat']), desc = 'formatting STR tree', total = len(clean_pft['lat'])):
+                pft_points.append(Point(lon, lat))
+
             spatial_tree = STRtree(pft_points)
 
             prepared_tasks = []
-            features_list = geojson_data["features"]
-            for feat in tqdm.tqdm(features_list, desc = 'preprocessing pft subsets'):
-                geom = feat.get("geometry")
+            for f_idx in tqdm.tqdm(fire_manifest_df.fire_index_id.values, desc = 'preprocessing pft subsets'):
+                geom = fire_manifest_df[fire_manifest_df.fire_index_id == f_idx]['wkt_geometry'].item()
+
                 if not geom:
                     continue
                 
                 try:
-                    fire_poly = shape(geom)
+                    fire_poly = shapely.wkt.loads(geom) # shape(geom)
                 except Exception:
                     continue
                     
@@ -495,7 +419,7 @@ class FireMapBase(ABC):
                     coordinate_mask = (clean_pft['lon'] == nearest_point.x) & (clean_pft['lat'] == nearest_point.y)
                     subset_df = clean_pft[coordinate_mask].copy()
                     
-                prepared_tasks.append((feat, subset_df))
+                prepared_tasks.append((f_idx, subset_df))
             fires_layer_group = folium.FeatureGroup(name="Active Fires", show=True)
 
             print(f"[+] Launching parallel rendering across worker pools for {len(prepared_tasks)} fires...")
@@ -505,22 +429,17 @@ class FireMapBase(ABC):
             frp_chart = {}
             with ProcessPoolExecutor(max_workers=config.max_workers) as executor:
                 futures = [
-                    executor.submit(_worker_render_single_plot, feat, sub_df, config.fx_names[0])
-                    for feat, sub_df in prepared_tasks
+                    executor.submit(_worker_render_single_plot, fire_key, sub_df, config.fx_names[0])
+                    for fire_key, sub_df in prepared_tasks
                 ]
-                
-                # futures = [
-                #     executor.submit(_worker_render_single_plot, feat, clean_pft, config.fx_names[0])
-                #     for feat in features_list
-                # ]
                 
                 for f in tqdm.tqdm(as_completed(futures), total=len(prepared_tasks), desc="PFT Popup Plots"):
                     fire_key, chart_html = f.result()
                     pft_chart[fire_key] = chart_html
                 
                 futures = [
-                    executor.submit(_worker_render_single_plot_frp, feat, frp_csv_path) 
-                    for feat in features_list
+                    executor.submit(_worker_render_single_plot_frp, fire_key, frp_csv_path) 
+                    for fire_key in list(fire_manifest_df.fire_index_id.values)
                 ]
 
                 for future in tqdm.tqdm(as_completed(futures), total=len(futures), desc="FRP Popup Plots"):
@@ -530,14 +449,13 @@ class FireMapBase(ABC):
                     except Exception as e:
                         print(f"[-] A worker process thread failed: {e}")
 
-            for feature in features_list:
-                props = feature.get("properties", {})
-                
-                f_key = props.get("fire_index_id", None)
-                f_name = props.get('name', 'Unknown')
-                f_id = props.get('fireid', 'N/A')
-                f_start = props.get('t_start', 'N/A')
-                f_status = props.get('status', 'N/A')
+            for f_key in fire_manifest_df.fire_index_id.values:
+                this_fire = fire_manifest_df[fire_manifest_df.fire_index_id == f_key]
+
+                f_name = this_fire['name'].item()
+                f_id = this_fire['fire_id'].item() # props.get('fireid', 'N/A')
+                f_start = this_fire['start_date'].item() # props.get('t_start', 'N/A')
+                f_status = this_fire['status'].item() # props.get('status', 'N/A')
 
                 # Pull the pre-compiled base64 chart layout directly from the lookup dictionary
                 pft_html = pft_chart.get(f_key, "<p style='color:gray;'>Error generating plot data.</p>")
@@ -564,6 +482,11 @@ class FireMapBase(ABC):
                 iframe = folium.IFrame(html=popup_content, width=480, height=360)
                 custom_popup = folium.Popup(iframe, max_width=500)
                 
+                feature = {"type": "Feature",
+                            "properties": {
+                                "name": f_name, "fireid": f_id},
+                            "geometry": mapping(shapely.wkt.loads(this_fire['wkt_geometry'].item()))
+                        }
                 folium.GeoJson(
                     feature,
                     style_function=lambda x: {

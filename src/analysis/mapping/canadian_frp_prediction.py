@@ -202,15 +202,14 @@ def process_single_fire(args):
     # ===================================================
     # AGGREGATE FORECAST MODELS DIRECTLY ON BOUNDING BOX
     # ===================================================
-    for f_idx, fc_file in enumerate(forecast_files):
+    for fc_file in forecast_files:
         with xr.open_dataset(fc_file) as ds_f:
-            fc_hours = ds_f['time'].values
-            fc_time_axis = np.array([forecast_dates[f_idx] + timedelta(hours=float(th)) for th in fc_hours])
-            time_forecast.append(fc_time_axis)
+            ds_f = ds_f.swap_dims({'time' : 'Time'})
+            time_forecast.append(np.array([pd.to_datetime(time) for time in ds_f.Time.values]))
             
             # 1. Get the exact dimension names from the dataset (e.g., 'south_north', 'west_east')
             # 'Time' is usually the first dimension, the other two are spatial
-            spatial_dims = [dim for dim in ds_f['FRP'].dims if dim != 'time']
+            spatial_dims = [dim for dim in ds_f['FRP'].dims if dim != 'Time']
             
             # 2. Use xarray's positional indexer using the exact dimension names
             # This ensures min_fcx always maps to the first spatial dim, and min_fcy to the second
@@ -224,6 +223,7 @@ def process_single_fire(args):
             masked_totals = crop_ds.sum(dim=spatial_dims).values
             
             frp_forecast_int_masked.append(masked_totals)
+
     # ==========================================
     # PHASE 5: HYBRID PREDICTION SYNTHESIS STAGE
     # ==========================================
@@ -237,14 +237,49 @@ def process_single_fire(args):
         print(f"[-] Warning: Time axes are misaligned for {fire_name}. Skipping hybrid step.")
         return None
 
-    # Slice the historical data
+    # Slice the historical data (up to 24 hours prior to pivot)
     historical_rave_sample = frp_timeseries[max(0, idx_rave_pivot-24):idx_rave_pivot]
+    
     actual_history_len = len(historical_rave_sample)
 
     if actual_history_len == 0:
         print(f"[-] Warning: No historical RAVE data found prior to pivot for {fire_name}. Filling hybrid forecast with NaNs.")
     else:
-        # Reference sample must match the same slice length as our history to calculate scaling safely
+        # Reference sample matches the exact same historical hours from the model baseline
+        fc1_reference_sample = frp_forecast_int_masked[0][max(0, idx_fc1_pivot-actual_history_len):idx_fc1_pivot]
+        
+        # --- DAY 1 HOURLY SCALING ---
+        # Grab the upcoming 24-hour forecast from the latest model run
+        fc2_day1_sample = frp_forecast_int_masked[1][idx_fc2_pivot:idx_fc2_pivot+actual_history_len]
+        
+        # Calculate hourly ratios safely (handling NaN and division by zero)
+        with np.errstate(divide='ignore', invalid='ignore'):
+            hourly_ratio_day1 = fc2_day1_sample / fc1_reference_sample
+            # Fallback to 1.0 if the historical model was 0 or NaN
+            hourly_ratio_day1 = np.where((fc1_reference_sample == 0) | np.isnan(hourly_ratio_day1), 1.0, hourly_ratio_day1)
+        
+        # Project Day 1 hourly
+        frp_forecast_hybrid[idx_fc2_pivot:idx_fc2_pivot+actual_history_len] = historical_rave_sample * hourly_ratio_day1
+        
+        # --- DAY 2 HOURLY SCALING ---
+        day2_start_idx = idx_fc2_pivot + 24
+        day2_end_idx = min(day2_start_idx + actual_history_len, len(frp_forecast_hybrid))
+        day2_slice_len = day2_end_idx - day2_start_idx
+        
+        if day2_slice_len > 0:
+            # Grab the Day 2 forecast window from the model
+            fc2_day2_sample = frp_forecast_int_masked[1][day2_start_idx:day2_end_idx]
+            
+            # Slice reference sample to match available day 2 length
+            ref_sample_sliced = fc1_reference_sample[:day2_slice_len]
+            hist_sample_sliced = historical_rave_sample[:day2_slice_len]
+            
+            with np.errstate(divide='ignore', invalid='ignore'):
+                hourly_ratio_day2 = fc2_day2_sample / ref_sample_sliced
+                hourly_ratio_day2 = np.where((ref_sample_sliced == 0) | np.isnan(hourly_ratio_day2), 1.0, hourly_ratio_day2)
+            
+            # Project Day 2 hourly
+            frp_forecast_hybrid[day2_start_idx:day2_end_idx] = hist_sample_sliced * hourly_ratio_day2# Reference sample must match the same slice length as our history to calculate scaling safely
         fc1_reference_sample = frp_forecast_int_masked[0][max(0, idx_fc1_pivot-actual_history_len):idx_fc1_pivot]
         
         # Determine the scaling ratios safely (handling NaNs/Div-by-Zero)
@@ -273,12 +308,14 @@ def process_single_fire(args):
         data_vars=dict(
             fc_yesterday=(["time_fc0"], frp_forecast_int_masked[0]),
             fc_latest=(["time_fc1"], frp_forecast_int_masked[1]),
-            fc_hybrid=(["time_hybrid"], frp_forecast_hybrid)
+            fc_hybrid=(["time_hybrid"], frp_forecast_hybrid),
+            rave_historical=(["time_rave"], frp_timeseries[:idx_rave_pivot+1])
         ),
         coords=dict(
             time_fc0=[t.strftime('%Y-%m-%d %H:%M:%S') for t in time_forecast[0]],
             time_fc1=[t.strftime('%Y-%m-%d %H:%M:%S') for t in time_forecast[1]],
-            time_hybrid=[t.strftime('%Y-%m-%d %H:%M:%S') for t in time_forecast_hybrid]
+            time_hybrid=[t.strftime('%Y-%m-%d %H:%M:%S') for t in time_forecast_hybrid],
+            time_rave=[t.strftime('%Y-%m-%d %H:%M:%S') for t in rave_timeline[:idx_rave_pivot+1]]
         ),
         attrs=dict(fire_name=fire_name, parent_idx=idx, fire_idx=fire_idx)
     )
@@ -339,7 +376,7 @@ def execute_predictive_fire_pipeline(target_dt, out_dir = "./ca_frp"):
             lon_forecast_full = fc_sample['XLONG'].values
             Nx_fc_max, Ny_fc_max = lat_forecast_full.shape
     except Exception as e:
-        print(f"[-] failed to process Canadian FRP predictions")
+        print(f"[-] failed to process Canadian FRP predictions with Exception {e}")
     # ==========================================
     # PARALLEL EXECUTION MULTIPROCESSING HARNESS
     # ==========================================
@@ -363,80 +400,83 @@ def execute_predictive_fire_pipeline(target_dt, out_dir = "./ca_frp"):
     cached_nc_paths = []
     
     print(f"[*] Dispatching grid interpolation calculations to ProcessPoolExecutor...")
-    try:
-        with concurrent.futures.ProcessPoolExecutor(max_workers=config.max_workers) as executor:
-            # Map retains tracking index sequence integrity natively
-            results = executor.map(process_single_fire, worker_tasks)
-            cached_nc_paths = [path for path in results if path is not None]
-            
-        print(f"[+] All processes completed execution. Synchronizing time series outputs...")
+    # try:
+    # process_single_fire(worker_tasks[0])
+    with concurrent.futures.ProcessPoolExecutor(max_workers=config.max_workers) as executor:
+        # Map retains tracking index sequence integrity natively
+        results = executor.map(process_single_fire, worker_tasks)
+        cached_nc_paths = [path for path in results if path is not None]
         
-        # Initialize a list to hold dataframes for each individual fire
-        timeseries_list = []
-        
-        # Read the stored intermediate NetCDF cache structures sequentially inside the main execution thread
-        for nc_path in cached_nc_paths:
-            with xr.open_dataset(nc_path) as ds_cache:
-                fire_name = ds_cache.attrs['fire_name']
-                fire_idx = ds_cache.attrs['fire_idx']
-                
-                # Collect timelines into dictionaries mapping time string to value
-                data_by_type = {}
-                all_timestamps = set()
-                
-                for label, coordinate_dim, dataset_var in [
-                    ('fc_yesterday', 'time_fc0', 'fc_yesterday'),
-                    ('fc_latest', 'time_fc1', 'fc_latest'),
-                    ('fc_hybrid', 'time_hybrid', 'fc_hybrid')
-                    ]:
-                    time_axis_st = [str(t) for t in ds_cache[coordinate_dim].values]
-                    data_values = ds_cache[dataset_var].values
-                    
-                    data_by_type[label] = pd.Series(data_values, index=time_axis_st)
-                    all_timestamps.update(time_axis_st)
-                
-                # Align data across all unique timestamps for this specific fire
-                sorted_timestamps = sorted(list(all_timestamps))
-                fire_ts_df = pd.DataFrame(index=sorted_timestamps)
-                fire_ts_df['fc_yesterday'] = fire_ts_df.index.map(data_by_type['fc_yesterday'])
-                fire_ts_df['fc_latest'] = fire_ts_df.index.map(data_by_type['fc_latest'])
-                fire_ts_df['fc_hybrid'] = fire_ts_df.index.map(data_by_type['fc_hybrid'])
-                
-                # Set up the multi-key structure: fire_name and time
-                fire_ts_df.index.name = 'time'
-                fire_ts_df = fire_ts_df.reset_index()
-                
-                fire_ts_df.insert(0, 'fire_idx', fire_idx)
-                fire_ts_df.insert(1, 'fire_name', fire_name)
-                
-                timeseries_list.append(fire_ts_df)
-
-        # Combine all individual fires into a single master time series dataframe
-        if timeseries_list:
-            master_ts_df = pd.concat(timeseries_list, ignore_index=True)
-            # Set the keys (fire_idx, time) as the multi-index
-            master_ts_df.set_index(['fire_idx', 'time'], inplace=True)
+    print(f"[+] All processes completed execution. Synchronizing time series outputs...")
+    
+    # Initialize a list to hold dataframes for each individual fire
+    timeseries_list = []
+    
+    # Read the stored intermediate NetCDF cache structures sequentially inside the main execution thread
+    for nc_path in cached_nc_paths:
+        with xr.open_dataset(nc_path) as ds_cache:
+            fire_name = ds_cache.attrs['fire_name']
+            fire_idx = ds_cache.attrs['fire_idx']
             
-            # Save to a dedicated file
-            predictions_output_csv = os.path.join(out_dir, "fire_predictions_timeseries.csv")
-            master_ts_df.to_csv(predictions_output_csv)
-            print(f"[+] Multi-key prediction time series saved to: {predictions_output_csv}")
-            if os.path.exists(cache_dir):
-                print("[*] Cleaning up intermediate cache tracking workspace directories...")
-                shutil.rmtree(cache_dir)
-                return predictions_output_csv
-        else:
-            print("[!] No prediction datasets found to compile.")
+            # Collect timelines into dictionaries mapping time string to value
+            data_by_type = {}
+            all_timestamps = set()
+            
+            for label, coordinate_dim, dataset_var in [
+                ('fc_yesterday', 'time_fc0', 'fc_yesterday'),
+                ('fc_latest', 'time_fc1', 'fc_latest'),
+                ('fc_hybrid', 'time_hybrid', 'fc_hybrid'),
+                ('rave_historical', 'time_rave', 'rave_historical')
+                ]:
+                time_axis_st = [str(t) for t in ds_cache[coordinate_dim].values]
+                data_values = ds_cache[dataset_var].values
+                
+                data_by_type[label] = pd.Series(data_values, index=time_axis_st)
+                all_timestamps.update(time_axis_st)
+            
+            # Align data across all unique timestamps for this specific fire
+            sorted_timestamps = sorted(list(all_timestamps))
+            fire_ts_df = pd.DataFrame(index=sorted_timestamps)
+            fire_ts_df['fc_yesterday'] = fire_ts_df.index.map(data_by_type['fc_yesterday'])
+            fire_ts_df['fc_latest'] = fire_ts_df.index.map(data_by_type['fc_latest'])
+            fire_ts_df['fc_hybrid'] = fire_ts_df.index.map(data_by_type['fc_hybrid'])
+            fire_ts_df['rave_historical'] = fire_ts_df.index.map(data_by_type['rave_historical'])
+            
+            # Set up the multi-key structure: fire_name and time
+            fire_ts_df.index.name = 'time'
+            fire_ts_df = fire_ts_df.reset_index()
+            
+            fire_ts_df.insert(0, 'fire_idx', fire_idx)
+            fire_ts_df.insert(1, 'fire_name', fire_name)
+            
+            timeseries_list.append(fire_ts_df)
 
-    except Exception as exc:
-        print(f"[-] Critical failure inside pipeline loop executor: {exc}")
-        raise exc
-    finally:
-        # Complete file deletion tracking cleanup of temporary intermediate NetCDF caches
+    # Combine all individual fires into a single master time series dataframe
+    if timeseries_list:
+        master_ts_df = pd.concat(timeseries_list, ignore_index=True)
+        # Set the keys (fire_idx, time) as the multi-index
+        master_ts_df.set_index(['fire_idx', 'time'], inplace=True)
+        
+        # Save to a dedicated file
+        predictions_output_csv = os.path.join(out_dir, "fire_predictions_timeseries.csv")
+        master_ts_df.to_csv(predictions_output_csv)
+        print(f"[+] Multi-key prediction time series saved to: {predictions_output_csv}")
         if os.path.exists(cache_dir):
             print("[*] Cleaning up intermediate cache tracking workspace directories...")
             shutil.rmtree(cache_dir)
-            return None
+            return predictions_output_csv
+    else:
+        print("[!] No prediction datasets found to compile.")
+
+    # except Exception as exc:
+    #     print(f"[-] Critical failure inside pipeline loop executor: {exc}")
+    #     raise exc
+    # finally:
+    #     # Complete file deletion tracking cleanup of temporary intermediate NetCDF caches
+    #     if os.path.exists(cache_dir):
+    #         print("[*] Cleaning up intermediate cache tracking workspace directories...")
+    #         shutil.rmtree(cache_dir)
+    #         return None
 
 if __name__ == "__main__":
     # Context-aware real-time dynamic analysis harness execution
