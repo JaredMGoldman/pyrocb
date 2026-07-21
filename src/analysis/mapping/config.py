@@ -15,6 +15,7 @@ def make_n_len_str(value, n=2):
     return f"%0{n}d" % (int(value),)
 
 DEBUG_MODE = False
+PRUNE_BOOL = False
 
 # Network & Server Options
 SERVER_PORT = 8650

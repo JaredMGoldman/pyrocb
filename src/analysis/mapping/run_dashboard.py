@@ -35,9 +35,10 @@ def RAVE():
     downloaded_files = pipeline.download_rave_files(last_n_days=config.rave_lookback, 
                                                     reference_date=config.now_dt)
     dropped_fires = pipeline.extract_frp_data_parallel_files(downloaded_files, config.max_workers)
-    prune_inactive_fires(dropped_fires,
-                         os_join(config.today_dir, 
-                                 config.active_fire_fname))
+    if config.PRUNE_BOOL:
+        prune_inactive_fires(dropped_fires,
+                             os_join(config.today_dir, 
+                                    config.active_fire_fname))
                         
     _copy_current(config.active_rave_fn)
 
