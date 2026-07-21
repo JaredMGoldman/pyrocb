@@ -23,8 +23,8 @@ SERVER_PORT = 8650
 now_dt = pd.Timestamp("2026-06-01") if DEBUG_MODE else pd.Timestamp(datetime.today().strftime("%Y%m%d"))
 forecast_time = "06:00"
 date_name = f"{now_dt.year}-{make_n_len_str(now_dt.month)}-{make_n_len_str(now_dt.day)}"
-now_date = f"{now_dt.year}-{make_n_len_str(now_dt.month)}-{make_n_len_str(now_dt.day)} {forecast_time}"
-date_str = f"{now_dt.year}-{now_dt.month}-{now_dt.day}_06Z"
+now_date = f"{date_name} {forecast_time}"
+date_str = f"{date_name}_06Z"
 
 rave_lookback = 3
 fxx_range = 48 if DEBUG_MODE else 72
@@ -35,7 +35,8 @@ fx_names = [GFS] if DEBUG_MODE else [RRFS]
 active_fire_class = ActiveFirePerimeterPipeline
 max_workers = 48
 
-cmap_name = 'viridis'
+cmap_name = 'viridis_r'
+grid_res = (180, 216)  
 
 current_dir = os_join(CACHE_BASE_DIR, 'active_fires', 'current')
 today_dir = os_join(CACHE_BASE_DIR, 'active_fires', date_name.replace('-','_'))

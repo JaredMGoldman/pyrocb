@@ -246,18 +246,32 @@ class FireMapBase(ABC):
             
         return frames, extent
 
-    def _generate_html_legend(self, vmin, vmax, cmap_name='autumn'):
-        """Generates a responsive floating CSS gradient legend matching the log-scale mesh color map."""
+    def _generate_html_legend(self, levels, cmap_name='viridis_r'):
+        """Generates a responsive floating CSS legend for discrete level steps."""
         cmap = plt.get_cmap(cmap_name)
-        samples = np.linspace(0, 1, 6)
-        hex_colors = [mcolors.to_hex(cmap(s)) for s in samples]
-        ticks = np.logspace(np.log10(vmin), np.log10(vmax), num=5)
-        gradient_css = ", ".join(hex_colors)
+        
+        # Sample colors at step midpoints / normalized levels
+        norm = mcolors.BoundaryNorm(levels, ncolors=cmap.N)
+        # Get a representative color for each discrete level block
+        midpoints = [(levels[i] + levels[i+1]) / 2 for i in range(len(levels)-1)]
+        hex_colors = [mcolors.to_hex(cmap(norm(m))) for m in midpoints]
+        
+        # Build CSS linear-gradient string with discrete stops
+        stops = []
+        n_blocks = len(hex_colors)
+        for i, color in enumerate(hex_colors):
+            p_start = (i / n_blocks) * 100
+            p_end = ((i + 1) / n_blocks) * 100
+            stops.append(f"{color} {p_start:.1f}%, {color} {p_end:.1f}%")
+        gradient_css = ", ".join(stops)
+        
+        # Select key level labels to display across the legend bottom
+        display_ticks = [levels[0], levels[len(levels)//4], levels[len(levels)//2], levels[3*len(levels)//4], levels[-1]]
         
         legend_html = f"""
         <div style="
             position: fixed; 
-            bottom: 50px; left: 50px; width: 320px; height: 85px; 
+            bottom: 50px; left: 50px; width: 340px; height: 85px; 
             z-index:9999; font-size:12px; font-family: 'Arial', sans-serif;
             background-color: rgba(20, 20, 20, 0.85);
             color: #ffffff; border-radius: 6px; padding: 12px;
@@ -265,22 +279,16 @@ class FireMapBase(ABC):
             border: 1px solid rgba(255,255,255,0.1);
         ">
             <div style="font-weight: bold; margin-bottom: 8px; font-size: 13px; color: #ffaa00;">
-                PyroCB Firepower Threshold (PFT)
+                PyroCB Firepower Threshold (PFT) [GW]
             </div>
             <div style="
                 width: 100%; height: 14px; 
                 background: linear-gradient(to right, {gradient_css});
                 border-radius: 3px; margin-bottom: 6px;
+                border: 1px solid #555;
             "></div>
             <div style="display: flex; justify-content: space-between; font-size: 10px; color: #cccccc;">
-                <span>{ticks[0]:.1f} GW</span>
-                <span>{ticks[1]:.1f} GW</span>
-                <span>{ticks[2]:.1f} GW</span>
-                <span>{ticks[3]:.1f} GW</span>
-                <span>{ticks[4]:.1f} GW</span>
-            </div>
-            <div style="font-size: 9px; color: #888888; text-align: center; margin-top: 5px;">
-                Continuous Scale (Logarithmic Normalization Stretch)
+                {''.join([f'<span>{t}</span>' for t in display_ticks])}
             </div>
         </div>
         """
@@ -304,7 +312,7 @@ class FireMapBase(ABC):
             return m
 
         extent = config.bounds 
-        grid_res = (90, 108)           
+        grid_res = config.grid_res         
         
         lon_edges = np.linspace(extent[0], extent[1], grid_res[1] + 1)
         lat_edges = np.linspace(extent[2], extent[3], grid_res[0] + 1)
@@ -337,12 +345,11 @@ class FireMapBase(ABC):
         clean_pft = pft_df[np.isfinite(pft_df['value'])].copy()
         timestamps = sorted(clean_pft['time'].unique())
         
-        vmin = max(clean_pft['value'].min(), 1.0)
-        vmax = np.percentile(clean_pft['value'], 99)
-        if vmin == vmax: vmax += 1.0
-        
-        norm = mcolors.LogNorm(vmin=vmin, vmax=vmax)
+        levels = [5, 7.5, 10, 25, 50, 75, 100, 250, 500, 750, 1000]
+
+        # Setup discrete BoundaryNorm using viridis_r
         cmap = plt.get_cmap(cmap_name)
+        norm = mcolors.BoundaryNorm(levels, ncolors=cmap.N, extend='both')
 
         style_dict = {str(idx): {} for idx in range(cell_idx)}
 
@@ -361,14 +368,16 @@ class FireMapBase(ABC):
             
             for val, cell_info in zip(interpolated_values, cell_centroids):
                 c_idx = str(cell_info[2])
-                if np.isnan(val) or val < vmin:
+                # Hide cell if NaN or below minimum lower boundary
+                if np.isnan(val) or val < levels[0]:
                     style_dict[c_idx][unix_sec] = {'color': '#000000', 'opacity': 0.0}
                 else:
+                    # BoundaryNorm maps val to discrete viridis_r bins
                     rgba = cmap(norm(val))
                     hex_color = mcolors.to_hex(rgba)
                     style_dict[c_idx][unix_sec] = {
                         'color': hex_color,
-                        'opacity': 0.45
+                        'opacity': 0.65  # Adjust opacity for visibility
                     }
 
         TimeSliderChoroplethUTC(
@@ -379,7 +388,7 @@ class FireMapBase(ABC):
             date_options="YYYY-MM-DD_HH:mm [UTC]"
         ).add_to(m)
 
-        legend_html_content = self._generate_html_legend(vmin, vmax, cmap_name=cmap_name)
+        legend_html_content = self._generate_html_legend(levels, cmap_name=cmap_name)
         m.get_root().html.add_child(folium.Element(legend_html_content))
 
         
