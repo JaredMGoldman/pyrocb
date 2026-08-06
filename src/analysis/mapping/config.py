@@ -15,10 +15,14 @@ def make_n_len_str(value, n=2):
     return f"%0{n}d" % (int(value),)
 
 DEBUG_MODE = False
-PRUNE_BOOL = False
+PRUNE_BOOL = True
+LATEST_BOOL = True
 
 # Network & Server Options
 SERVER_PORT = 8650
+
+MIN_FRP_THRESHOLD = 1  # MW
+MAX_ALLOWED_RATIO = 100.0  # Cap maximum hourly model growth factor at 5x (or 10x)
 
 now_dt = pd.Timestamp("2026-06-01") if DEBUG_MODE else pd.Timestamp(datetime.today().strftime("%Y%m%d"))
 forecast_time = "06:00"
@@ -65,7 +69,7 @@ TIMEDIMENSION_ASSETS = {
 
 # Spatial Mapping Extents [West Lon, East Lon, South Lat, North Lat]
 MAP_BOUNDS = {
-    'west': -140.0, 'east': -50.0, 'south': 24.0, 'north': 75.0
+    'west': -140.0, 'east': -90.0, 'south': 24.0, 'north': 75.0
 }
 
 bounds = [MAP_BOUNDS["west"], MAP_BOUNDS['east'], MAP_BOUNDS["south"], MAP_BOUNDS['north']]
@@ -73,16 +77,6 @@ bounds = [MAP_BOUNDS["west"], MAP_BOUNDS['east'], MAP_BOUNDS["south"], MAP_BOUND
 lons = [MAP_BOUNDS["west"], MAP_BOUNDS['east']]
 lats = [MAP_BOUNDS["south"], MAP_BOUNDS['north']]
 
-# VEDA Ingestion Regions
-VEDA_REGIONS = {
-    "western_us_ca": "-125,32,-114,42",   
-    "pacific_nw_bc": "-130,42,-110,60",   
-    "boreal_canada": "-120,50,-80,70",    
-    "eastern_na": "-90,30,-60,55",
-    "central_us": "-115,30,-90,50"
-}
-
-VEDA_BASE_URL = "https://openveda.cloud/api/features"
 
 REMOTE_DIR = "/srv/data/web/data-web/research/inspyre/pft"
 USERNAME = 'jaredgoldman'

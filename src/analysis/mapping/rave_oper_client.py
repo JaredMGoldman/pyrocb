@@ -1,7 +1,7 @@
 import os
 import re
 import datetime
-from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, as_completed
 import numpy as np
 from pathlib import Path
 import pandas as pd
@@ -24,7 +24,6 @@ curl_body = \
     f"""-H 'accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7' \
     -H 'accept-language: en-US,en;q=0.9,fr;q=0.8' \
     -H 'cache-control: max-age=0' \
-    -b 'nmstat=44cf2bba-98cb-af77-e050-319844a0bcbf; _ga_P6H1P1YGHK=GS2.1.s1770318320$o3$g0$t1770318320$j60$l0$h0; _ga_8QRDKZKW09=GS2.1.s1771791152$o1$g1$t1771791382$j60$l0$h0; _ga_PTKGMX2RGX=GS2.1.s1772049972$o4$g0$t1772049972$j60$l0$h0; _ga_4V68PS2QKC=GS2.1.s1772310646$o7$g0$t1772310646$j60$l0$h0; _ga_5C3L2X4VLP=GS2.1.s1772649516$o1$g1$t1772649537$j39$l0$h0; _ga_FVJXY24VSZ=GS2.1.s1773978460$o3$g0$t1773978470$j50$l0$h0; _ga_VNE5GEVT4X=GS2.1.s1775324807$o1$g0$t1775324807$j60$l0$h0; _ga_KB1ED9SLQD=GS2.1.s1777239350$o7$g1$t1777240441$j50$l0$h0; _ga_G2DC4173X1=GS2.1.s1777239441$o5$g1$t1777240477$j30$l0$h0; _ga_8PVW29QMYJ=GS2.2.s1778531157$o10$g0$t1778531157$j60$l0$h0; _ga_WEE2HX9G91=GS2.1.s1778706966$o11$g0$t1778706966$j60$l0$h0; _ga_F0TVX8GTMV=GS2.1.s1778706966$o11$g0$t1778706966$j60$l0$h0; _ga_G1F0K33KY9=GS2.1.s1779141469$o2$g0$t1779141469$j60$l0$h0; _ga_JK69RBSYCC=GS2.1.s1779141469$o2$g0$t1779141469$j60$l0$h0; _ga_8G5H3D09RC=GS2.1.s1781286353$o4$g1$t1781288038$j60$l0$h0; _ga_HS0NRB74WC=GS2.1.s1781461685$o5$g0$t1781461685$j60$l0$h0; _ga_E1Q1BML6E5=GS2.1.s1782164256$o5$g0$t1782164256$j60$l0$h0; _ga_73CXWL3FH9=GS2.1.s1782842269$o4$g1$t1782842302$j27$l0$h0; _ga_BGDP0TBYX2=GS2.1.s1783443043$o3$g1$t1783443283$j60$l0$h0; _ga=GA1.1.488889452.1770153793; _ga_CSLL4ZEK4L=GS2.1.s1784074627$o72$g0$t1784075012$j60$l0$h0; _ga_WFK3K5ECCC=GS2.1.s1784074627$o22$g0$t1784075012$j60$l0$h0' \
     -H 'dnt: 1' \
     -H 'priority: u=0, i' \
     -H 'sec-ch-ua: "Not;A=Brand";v="8", "Chromium";v="150", "Google Chrome";v="150"' \
@@ -158,16 +157,17 @@ def _process_file_multiprocessing_worker(file_path: Path, fires: list[dict]) -> 
     Opens a single NetCDF file ONCE and calculates FRP for all fire geometries.
     """
     results = []
+    all_rave_grids = {}
     filename = file_path.name
     
     # Extract timestamp from filename (e.g., _sYYYYMMDDHHMMSS)
     try:
         timestamp_match = re.search(r'_s(\d{14})', filename)
         if not timestamp_match:
-            return results
+            return results, all_rave_grids
         timestamp = pd.to_datetime(timestamp_match.group(1), format="%Y%m%d%H%M%S")
     except Exception:
-        return results
+        return results, all_rave_grids
 
     try:
         # Open the dataset inside the isolated process
@@ -179,7 +179,6 @@ def _process_file_multiprocessing_worker(file_path: Path, fires: list[dict]) -> 
 
             # Auto-detect target variable (looking for FRP)
             frp_var = 'FRP_MEAN' if 'FRP_MEAN' in ds.data_vars else list(ds.data_vars.keys())[0]
-            
             for fire in fires:
                 fire_id = fire['fire_index_id']
                 # Reconstruct shapely geometry from WKT (highly portable for multiprocessing)
@@ -189,6 +188,9 @@ def _process_file_multiprocessing_worker(file_path: Path, fires: list[dict]) -> 
                     # Clip the single opened file to this specific fire's polygon
                     clipped = _subset_to_polygon(ds[[frp_var]], geom)
                     total_frp = np.float32(clipped[frp_var].sum(skipna=True))
+
+                    if not fire_id in all_rave_grids:
+                        all_rave_grids[fire_id] = '_'.join([' '.join([str(lon), str(lat)] )for lon, lat in zip(clipped.grid_lont.values.flat, clipped.grid_latt.values.flat)])
                     results.append({
                         "fire_index_id": fire_id,
                         "timestamp": timestamp,
@@ -206,7 +208,7 @@ def _process_file_multiprocessing_worker(file_path: Path, fires: list[dict]) -> 
     except Exception as e:
         print(f"Error processing file {filename} in worker process: {e}")
         
-    return results
+    return results, all_rave_grids
 
 class RAVEOperClient:
     """
@@ -408,13 +410,22 @@ class RAVEOperClient:
                 executor.submit(_process_file_multiprocessing_worker, path, self.serialized_fires): path 
                 for path in file_paths
             }
-            
+            no_grids = True
             for future in timer(as_completed(futures), desc="RAVE nc processing", total = len(futures)):
                 file_path = futures[future]
                 try:
-                    records = future.result()
+                    records, all_rave_grids = future.result()
                     if records:
                         all_records.extend(records)
+                    if all_rave_grids and no_grids:
+                        # Maps matching fire_ids from dictionary to column, fills unmapped rows with ""
+                        self.df_manifest['rave_grids'] = (
+                            self.df_manifest['fire_index_id'].map(all_rave_grids).fillna("")
+                        )
+                        no_grids = False
+                        
+                        self.df_manifest.to_csv(self.csv_path, index = False)
+                        print(f"[+] rewrote manifest to {self.csv_path}")
                 except Exception as e:
                     print(f"Failed to process file {file_path.name}: {e}")
 
@@ -428,8 +439,8 @@ class RAVEOperClient:
         zero_frp_mask = df_output.groupby('fire_index_id')['total_rave_frp'].sum() == 0
         zero_frp_fires = zero_frp_mask[zero_frp_mask].index.tolist()
 
-        print(f"[*] identified and removing {len(zero_frp_fires)} inactive fires")
-        df_output = df_output[~df_output.fire_index_id.isin(zero_frp_fires)].reset_index(drop = True)
+        # print(f"[*] identified and removing {len(zero_frp_fires)} inactive fires")
+        # df_output = df_output[~df_output.fire_index_id.isin(zero_frp_fires)].reset_index(drop = True)
         df_output.to_csv(self.output_csv, index=False)
         
         print(f"[*] Data processing complete! Saved final metrics to: {self.output_csv}")

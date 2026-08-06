@@ -37,6 +37,8 @@ def _worker_render_single_plot_frp(fire_key, frp_csv_path):
         
         # Filter rows matching this specific fire name
         fire_sub = frp_df[frp_df['fire_idx'] == fire_key].copy()
+
+        fire_name = fire_sub.iloc[0].fire_name.replace('_', ' ').upper()
         
         if fire_sub.empty:
             return fire_key, f"<p style='color:gray;'>No FRP forecast data available for {fire_key}.</p>"
@@ -66,7 +68,7 @@ def _worker_render_single_plot_frp(fire_key, frp_csv_path):
             plt.close(fig)
             return fire_key, f"<p style='color:gray;'>FRP data coordinates are empty for {fire_key}.</p>"
             
-        ax.set_title(f"FRP Forecast Trend: {fire_key}", fontsize=9, fontweight='bold')
+        ax.set_title(f"FRP Forecast Trend: {fire_name}", fontsize=9, fontweight='bold')
         ax.set_ylabel("Total FRP [MW]", fontsize=8)
         ax.grid(True, linestyle=':', alpha=0.6)
         ax.legend(loc='upper left', fontsize=7)
