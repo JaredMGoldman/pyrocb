@@ -350,8 +350,6 @@ class ActiveFirePerimeterPipeline(FireMapBase):
         if records:
             df = pd.DataFrame(records)
             df = df.sort_values(by="peak_area_km2", ascending=False)
-            df = df[df['peak_area_km2'] > 10].reset_index(drop=True)
-            df = df.drop(df[df.name == "UNKNOWN_CA_ID"].index).reset_index(drop=True)
             df.to_csv(output_csv, index=False)
             print(f"[+] Active fire statistical inventory saved successfully: '{output_csv}'")
             return df

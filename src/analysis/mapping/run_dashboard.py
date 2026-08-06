@@ -1,8 +1,6 @@
-import os
 from os.path import join as os_join
 from os.path import exists as os_exists
-import shutil
-
+import pandas as pd
 from analysis.mapping.pft_gen_parallel import pull_data, group_client_dses, \
                                         calc_pfts, calc_soundings, \
                                         parse_to_dataframe
@@ -28,31 +26,52 @@ def FETCH():
     _copy_current(config.active_fire_fname)
 
 def RAVE():
-    print('pulling rave values for active fires...')
-    pipeline = RAVEOperClient(csv_path = os_join(config.today_dir, config.active_fire_fname),
-                   download_dir = config.rave_cache,
-                   output_csv = os_join(config.today_dir, config.active_rave_fn))
-    downloaded_files = pipeline.download_rave_files(last_n_days=config.rave_lookback, 
-                                                    reference_date=config.now_dt)
-    dropped_fires = pipeline.extract_frp_data_parallel_files(downloaded_files, config.max_workers)
-    prune_inactive_fires(dropped_fires,
-                         os_join(config.today_dir, 
-                                 config.active_fire_fname))
-                        
-    _copy_current(config.active_rave_fn)
+    try:
+        print('pulling rave values for active fires...')
+        pipeline = RAVEOperClient(csv_path = os_join(config.today_dir, config.active_fire_fname),
+                    download_dir = config.rave_cache,
+                    output_csv = os_join(config.today_dir, config.active_rave_fn))
+        downloaded_files = pipeline.download_rave_files(last_n_days=config.rave_lookback, 
+                                                        reference_date=config.now_dt)
+        dropped_fires = pipeline.extract_frp_data_parallel_files(downloaded_files, config.max_workers)
+        if config.PRUNE_BOOL:
+            print("[+] pruning fires")
+            prune_inactive_fires(dropped_fires,
+                                os_join(config.today_dir, 
+                                        config.active_fire_fname))
+                            
+        _copy_current(config.active_rave_fn)
+    except Exception as e:
+        print(f"RAVE failed with exception {e}")
 
 def FRP_CAN():
-    print('running canadian frp prediction...')
-    frp_csv = execute_predictive_fire_pipeline( target_dt = config.now_dt, 
-                                                out_dir = config.today_dir)
-    _copy_current(config.can_frp_fname)
-    return frp_csv
+    try:
+        print('running canadian frp prediction...')
+        frp_csv = execute_predictive_fire_pipeline( target_dt = config.now_dt, 
+                                                    out_dir = config.today_dir)
+        _copy_current(config.can_frp_fname)
+        return frp_csv
+    except Exception as e:
+        print(f"FRP_CAN failed with exception {e}")
+        return None
 
 def DB():
     print('generating pft sounding database...')
-    dses = pull_data(config.now_date, config.lats, config.lons, 
-                     config.fxx_range, config.clients, 
-                     config.max_workers, config.fxx_freq)
+    try:
+        dses = pull_data(config.now_date, config.lats, config.lons, 
+                        config.fxx_range, config.clients, 
+                        config.max_workers, config.fxx_freq)
+    except Exception as e:
+        new_date = pd.to_datetime(config.now_date).strftime("%Y-%m-%d")
+        print(f"[-] failed to pull rave data at {config.now_date} retrying with {new_date} : {e}")
+        try:
+            dses = pull_data(new_date, config.lats, config.lons, 
+                             config.fxx_range, config.clients, 
+                             config.max_workers, config.fxx_freq)
+        except Exception as e2:
+            print(f"[-] CRITICAL FAILURE: could not pull RRFS data \
+                  for either {config.now_date} or {new_date}: {e2}")
+            raise e2
     client_dses = group_client_dses(dses, config.fx_names)
     cache = SignalCache(db_path=os_join(config.today_dir, config.snd_cache_fn))
     calc_soundings(client_dses, config.max_workers, cache)
@@ -79,7 +98,7 @@ def MAP():
     upload_simplified(  os_join(config.today_dir, config.html_fname), 
                         os_join(config.REMOTE_DIR, config.html_fname),
                         hostname = config.HOSTNAME, username=config.USERNAME)
-    if not config.DEBUG_MODE:
+    if not config.DEBUG_MODE and config.LATEST_BOOL:
         upload_simplified(os_join(config.today_dir, config.html_fname), 
                           os_join(config.REMOTE_DIR, "latest.html"),
                           hostname = config.HOSTNAME, username=config.USERNAME)
