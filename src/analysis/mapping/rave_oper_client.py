@@ -10,6 +10,7 @@ import sys
 import xarray as xr
 import rioxarray
 from shapely import wkt
+import time
 from tqdm import tqdm as timer
 from typing import Tuple, Union
 
@@ -20,21 +21,13 @@ from shapely import points, contains, distance
 
 Geom = Union[Polygon, MultiPolygon]
 
-curl_body = \
-    f"""-H 'accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7' \
-    -H 'accept-language: en-US,en;q=0.9,fr;q=0.8' \
-    -H 'cache-control: max-age=0' \
-    -H 'dnt: 1' \
-    -H 'priority: u=0, i' \
-    -H 'sec-ch-ua: "Not;A=Brand";v="8", "Chromium";v="150", "Google Chrome";v="150"' \
-    -H 'sec-ch-ua-mobile: ?0' \
-    -H 'sec-ch-ua-platform: "macOS"' \
-    -H 'sec-fetch-dest: document' \
-    -H 'sec-fetch-mode: navigate' \
-    -H 'sec-fetch-site: none' \
-    -H 'sec-fetch-user: ?1' \
-    -H 'upgrade-insecure-requests: 1' \
-    -H 'user-agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36'"""
+curl_headers = (
+    "-H 'Cache-Control: no-cache, no-store, must-revalidate' "
+    "-H 'Pragma: no-cache' "
+    "-H 'Expires: 0' "
+    "-H 'User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)'"
+)
+
 
 def _infer_lat_lon_names(ds: xr.Dataset) -> Tuple[str, str]:
     lat_names: Tuple[str, ...] = ("lat", "latitude", "LAT", "Latitude", "y", "grid_latt")
@@ -240,11 +233,14 @@ class RAVEOperClient:
         """Generates a list of date objects for the last N days."""
         return [reference_date - pd.Timedelta(i, unit='D') for i in range(last_n_days)]
 
-    def _download_rave_data(self, target_date, command, out_dir):
-        # Define paths and URLs
+    def _download_rave_data(self, target_date, out_dir):
         base_url = f"https://www.ospo.noaa.gov/pub/Blended/RAVE/RAVE-HrlyEmiss-3km/{target_date[:4]}/{target_date[4:6]}/"
+        
+        # Append a unique timestamp query parameter to bypass edge caches completely
+        cache_buster_url = f"{base_url}?_={int(time.time())}"
+        
+        command = f"curl -s -L {curl_headers} '{cache_buster_url}'"
 
-        # Ensure output directory exists
         os.makedirs(out_dir, exist_ok=True)
         try:
             result = subprocess.run(
@@ -255,18 +251,12 @@ class RAVEOperClient:
             print(f"Error fetching HTML index: {e}", file=sys.stderr)
             return
         except FileNotFoundError:
-            print(
-                "Error: 'curl' command not found in your system PATH.",
-                file=sys.stderr,
-            )
+            print("Error: 'curl' command not found in PATH.", file=sys.stderr)
             return
 
-        # This regex matches any href="filename.nc" containing the target date
+        # Match NetCDF filenames
         pattern = rf'href="([^"]*{re.escape(f"s{target_date}")}[^"]*\.nc)"'
-        filenames = re.findall(pattern, html_content)
-
-        # Deduplicate matching files (Apache listings sometimes repeat links in tables)
-        filenames = list(dict.fromkeys(filenames))
+        filenames = list(dict.fromkeys(re.findall(pattern, html_content)))
 
         if not filenames:
             print(f"No NetCDF files found matching date: {target_date}")
@@ -274,32 +264,23 @@ class RAVEOperClient:
 
         print(f"Found {len(filenames)} matching files. Starting downloads...")
 
-        # 3. Spawn wget subprocesses for each file
         downloaded = []
         for filename in filenames:
             file_url = f"{base_url.rstrip('/')}/{filename}"
-            if os.path.exists(os.path.join(out_dir, filename)):
-                downloaded.append(os.path.join(out_dir, filename))
+            dest_path = os.path.join(out_dir, filename)
+            
+            if os.path.exists(dest_path):
+                downloaded.append(dest_path)
                 continue
+                
             print(f"Downloading: {filename}")
-
-            # -nc (no-clobber) skips download if the file already exists locally
-            wget_cmd = ' '.join(["wget", "-nc", "-P", out_dir, file_url])
+            wget_cmd = f"wget -nc -P '{out_dir}' '{file_url}'"
 
             try:
-                # We run with check=True to raise an exception if a download fails
-                subprocess.run(wget_cmd, check=True, 
-                               shell = True, 
-                               capture_output=True)
-                downloaded.append(os.path.join(out_dir, filename))
+                subprocess.run(wget_cmd, check=True, shell=True, capture_output=True)
+                downloaded.append(dest_path)
             except subprocess.CalledProcessError as e:
                 print(f"Failed to download {filename}: {e}", file=sys.stderr)
-            except FileNotFoundError:
-                print(
-                    "Error: 'wget' command not found in your system PATH.",
-                    file=sys.stderr,
-                )
-                return None
 
         print("Process complete.")
         return downloaded
@@ -315,12 +296,9 @@ class RAVEOperClient:
         downloaded_paths = []
         out_dir = f"{CACHE_BASE_DIR}/rave/{datetime.date.today().strftime("%Y%m%d")}/"
         for date_obj in dates:
-            year = date_obj.strftime("%Y")
             yyyymmdd = date_obj.strftime("%Y%m%d")
-            mm = date_obj.strftime("%m")
-            curl_header = f"curl '{self.BASE_URL}/{year}/{mm}/'"
-            command = curl_header + " " + curl_body 
-            files = self._download_rave_data(yyyymmdd, command, out_dir)
+
+            files = self._download_rave_data(yyyymmdd, out_dir)
             if files:
                 downloaded_paths.extend([Path(fname) for fname in files])
                   
