@@ -51,12 +51,12 @@ def _worker_render_single_plot_frp(fire_key, frp_csv_path):
         fig, ax = plt.subplots(figsize=(5, 3))
         
         has_plot = False
-        if 'fc_yesterday' in fire_sub.columns and not fire_sub['fc_yesterday'].isna().all():
-            ax.plot(fire_sub['time'], fire_sub['fc_yesterday'], color='black', linestyle='--', alpha=0.7, label='Yesterday 06Z')
-            has_plot = True
-        if 'fc_latest' in fire_sub.columns and not fire_sub['fc_latest'].isna().all():
-            ax.plot(fire_sub['time'], fire_sub['fc_latest'], color='red', linestyle='-', linewidth=1.2, label='Latest 06Z')
-            has_plot = True
+        # if 'fc_yesterday' in fire_sub.columns and not fire_sub['fc_yesterday'].isna().all():
+        #     ax.plot(fire_sub['time'], fire_sub['fc_yesterday'], color='black', linestyle='--', alpha=0.7, label='Yesterday 06Z')
+        #     has_plot = True
+        # if 'fc_latest' in fire_sub.columns and not fire_sub['fc_latest'].isna().all():
+        #     ax.plot(fire_sub['time'], fire_sub['fc_latest'], color='red', linestyle='-', linewidth=1.2, label='Latest 06Z')
+        #     has_plot = True
         if 'fc_hybrid' in fire_sub.columns and not fire_sub['fc_hybrid'].isna().all():
             ax.plot(fire_sub['time'], fire_sub['fc_hybrid'], color='green', linestyle='-', linewidth=1.8, label='Hybrid Blend')
             has_plot = True
