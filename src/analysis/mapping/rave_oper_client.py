@@ -414,15 +414,9 @@ class RAVEOperClient:
         # Export compiled records to CSV
         df_output = pd.DataFrame(all_records)
         df_output = df_output.sort_values(by=['fire_index_id', 'timestamp']).reset_index(drop = True)
-        zero_frp_mask = df_output.groupby('fire_index_id')['total_rave_frp'].sum() == 0
-        zero_frp_fires = zero_frp_mask[zero_frp_mask].index.tolist()
-
-        # print(f"[*] identified and removing {len(zero_frp_fires)} inactive fires")
-        # df_output = df_output[~df_output.fire_index_id.isin(zero_frp_fires)].reset_index(drop = True)
         df_output.to_csv(self.output_csv, index=False)
         
         print(f"[*] Data processing complete! Saved final metrics to: {self.output_csv}")
-        return zero_frp_fires
 
 
 # --- Execution Hook ---

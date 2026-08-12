@@ -11,25 +11,30 @@ import shutil
 
 from analysis.mapping.fire_map_base import FireMapBase
 
-def prune_inactive_fires(inactive_fires, active_fire_csv_path, bbox):
-    shutil.copy(active_fire_csv_path, active_fire_csv_path.replace('.csv', '_superset.csv'))
+def prune_inactive_fires(fire_info_csv, rave_csv, bbox):
+    shutil.copy(fire_info_csv, fire_info_csv.replace('.csv', '_superset.csv'))
+    shutil.copy(rave_csv, rave_csv.replace('.csv', '_superset.csv'))
 
-    active_fire_df = pd.read_csv(active_fire_csv_path)
-    new_fire_df = active_fire_df[~active_fire_df.fire_index_id.isin(inactive_fires)].reset_index(drop=True)
+    fire_info_df = pd.read_csv(fire_info_csv)
+    rave_data_df = pd.read_csv(rave_csv)
+
+    zero_frp_mask = rave_data_df.groupby('fire_index_id')['total_rave_frp'].sum() == 0
+    invalid_fires = zero_frp_mask[zero_frp_mask].index.tolist()
 
     # 1. Parse WKT strings row-by-row
-    new_fire_df['geometry'] = new_fire_df['wkt_geometry'].apply(wkt.loads)
+    fire_info_df['geometry'] = fire_info_df['wkt_geometry'].apply(wkt.loads)
 
     # 2A. Using Shapely 2.0+ Vectorized API (Fastest pure-shapely method)
-    is_contained = intersects(bbox, new_fire_df['geometry'].values)
+    is_contained = intersects(bbox, fire_info_df['geometry'].values)
 
-    # --- OR ---
+    unbounded = fire_info_df[~is_contained].fire_index_id.tolist() 
+    invalid = list(set(invalid_fires) | set(unbounded))
 
-    # 2B. Using standard Pandas .apply() (Works on older Shapely versions)
-    # is_contained = new_fire_df['geometry'].apply(lambda g: bbox.contains(g))
+    new_rave_df = rave_data_df[~rave_data_df.fire_index_id.isin(invalid)].reset_index(drop=True)
+    new_info_df = fire_info_df[~fire_info_df.fire_index_id.isin(invalid)].reset_index(drop=True)
 
-    new_fire_df_bounded = new_fire_df[is_contained].reset_index(drop=True)    
-    new_fire_df_bounded.to_csv(active_fire_csv_path, index=False)
+    new_info_df.to_csv(fire_info_csv, index=False)
+    new_rave_df.to_csv(rave_csv, index=False)
     print("[+] subsetted csv data to active fires")
 
 class ActiveFirePerimeterPipeline(FireMapBase):

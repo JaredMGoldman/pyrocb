@@ -35,13 +35,7 @@ def RAVE():
                     output_csv = os_join(config.today_dir, config.active_rave_fn))
         downloaded_files = pipeline.download_rave_files(last_n_days=config.rave_lookback, 
                                                         reference_date=config.now_dt)
-        dropped_fires = pipeline.extract_frp_data_parallel_files(downloaded_files, config.max_workers)
-        if config.PRUNE_BOOL:
-            print("[+] pruning fires")
-            prune_inactive_fires(dropped_fires,
-                                os_join(config.today_dir, 
-                                        config.active_fire_fname),
-                                box(config.bounds))
+        pipeline.extract_frp_data_parallel_files(downloaded_files, config.max_workers)
                             
         _copy_current(config.active_rave_fn)
     except Exception as e:
@@ -107,15 +101,26 @@ def MAP():
                           os_join(config.REMOTE_DIR, "latest.html"),
                           hostname = config.HOSTNAME, username=config.USERNAME)
 
+def PRUNE():
+    if config.PRUNE_BOOL:
+        print("[+] pruning fires")
+        prune_inactive_fires(os_join(config.today_dir, 
+                                    config.active_fire_fname),
+                            os_join(config.today_dir, 
+                                    config.active_rave_fn),
+                            box(*config.bounds))
+
 def run_pipeline():
     if not os_exists(os_join(config.today_dir, config.active_fire_fname)):
         print('missing active fire polygons.')
         FETCH()
         RAVE()
+        PRUNE()
         FRP_CAN()
     if not os_exists(os_join(config.today_dir, config.active_rave_fn)):
         print('missing active fire rave values.')
         RAVE()
+        PRUNE()
         FRP_CAN()
     if not os_exists(os_join(config.today_dir, config.can_frp_fname)):
         print('missing active fire frp predictions.')
