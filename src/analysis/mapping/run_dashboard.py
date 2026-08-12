@@ -79,7 +79,7 @@ def DB():
 
 def PFT(cache):
     print('calculating active pfts...')
-    pfts = calc_pfts(cache, config.max_workers)
+    pfts = calc_pfts(cache, config.max_workers, config.MAX_PLUME_TOP_TS)
     df_pfts_calculated = parse_to_dataframe(pfts)
     df_pfts_calculated.to_csv(os_join(config.today_dir, config.pft_fname), index = False)
     _copy_current(config.pft_fname)

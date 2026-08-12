@@ -24,6 +24,8 @@ SERVER_PORT = 8650
 MIN_FRP_THRESHOLD = 1  # MW
 MAX_ALLOWED_RATIO = 100.0  # Cap maximum hourly model growth factor at 5x (or 10x)
 
+MAX_PLUME_TOP_TS = [-40.0, -20.0]
+
 now_dt = pd.Timestamp("2026-06-01") if DEBUG_MODE else pd.Timestamp(datetime.today().strftime("%Y%m%d"))
 forecast_time = "06:00"
 date_name = f"{now_dt.year}-{make_n_len_str(now_dt.month)}-{make_n_len_str(now_dt.day)}"
