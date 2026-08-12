@@ -2,24 +2,34 @@ import requests
 import pandas as pd
 from datetime import datetime
 from shapely.ops import transform
-import json
-import os
+from shapely import wkt
 import pyproj
 from functools import partial
 from shapely.geometry import shape
-from shapely import Point
+from shapely import Point, intersects
 import shutil
 
 from analysis.mapping.fire_map_base import FireMapBase
 
-def prune_inactive_fires(inactive_fires, active_fire_csv_path):
+def prune_inactive_fires(inactive_fires, active_fire_csv_path, bbox):
     shutil.copy(active_fire_csv_path, active_fire_csv_path.replace('.csv', '_superset.csv'))
 
     active_fire_df = pd.read_csv(active_fire_csv_path)
-
     new_fire_df = active_fire_df[~active_fire_df.fire_index_id.isin(inactive_fires)].reset_index(drop=True)
 
-    new_fire_df.to_csv(active_fire_csv_path, index=False)
+    # 1. Parse WKT strings row-by-row
+    new_fire_df['geometry'] = new_fire_df['wkt_geometry'].apply(wkt.loads)
+
+    # 2A. Using Shapely 2.0+ Vectorized API (Fastest pure-shapely method)
+    is_contained = intersects(bbox, new_fire_df['geometry'].values)
+
+    # --- OR ---
+
+    # 2B. Using standard Pandas .apply() (Works on older Shapely versions)
+    # is_contained = new_fire_df['geometry'].apply(lambda g: bbox.contains(g))
+
+    new_fire_df_bounded = new_fire_df[is_contained].reset_index(drop=True)    
+    new_fire_df_bounded.to_csv(active_fire_csv_path, index=False)
     print("[+] subsetted csv data to active fires")
 
 class ActiveFirePerimeterPipeline(FireMapBase):

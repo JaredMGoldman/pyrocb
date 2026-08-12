@@ -292,8 +292,8 @@ class FireMapBase(ABC):
         extent = config.bounds 
         grid_res = config.grid_res         
         
-        lon_edges = np.linspace(extent[0], extent[1], grid_res[1] + 1)
-        lat_edges = np.linspace(extent[2], extent[3], grid_res[0] + 1)
+        lon_edges = np.linspace(extent[0], extent[2], grid_res[1] + 1)
+        lat_edges = np.linspace(extent[1], extent[3], grid_res[0] + 1)
         
         grid_features = []
         cell_idx = 0

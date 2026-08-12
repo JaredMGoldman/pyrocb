@@ -1,6 +1,8 @@
 from os.path import join as os_join
 from os.path import exists as os_exists
 import pandas as pd
+from shapely import box
+
 from analysis.mapping.pft_gen_parallel import pull_data, group_client_dses, \
                                         calc_pfts, calc_soundings, \
                                         parse_to_dataframe
@@ -38,7 +40,8 @@ def RAVE():
             print("[+] pruning fires")
             prune_inactive_fires(dropped_fires,
                                 os_join(config.today_dir, 
-                                        config.active_fire_fname))
+                                        config.active_fire_fname),
+                                box(config.bounds))
                             
         _copy_current(config.active_rave_fn)
     except Exception as e:

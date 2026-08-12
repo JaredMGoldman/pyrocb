@@ -74,7 +74,7 @@ MAP_BOUNDS = {
     'west': -140.0, 'east': -90.0, 'south': 24.0, 'north': 75.0
 }
 
-bounds = [MAP_BOUNDS["west"], MAP_BOUNDS['east'], MAP_BOUNDS["south"], MAP_BOUNDS['north']]
+bounds = [MAP_BOUNDS["west"], MAP_BOUNDS["south"], MAP_BOUNDS['east'], MAP_BOUNDS['north']]
 
 lons = [MAP_BOUNDS["west"], MAP_BOUNDS['east']]
 lats = [MAP_BOUNDS["south"], MAP_BOUNDS['north']]
