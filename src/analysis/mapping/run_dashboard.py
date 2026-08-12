@@ -75,11 +75,12 @@ def DB():
     client_dses = group_client_dses(dses, config.fx_names)
     cache = SignalCache(db_path=os_join(config.today_dir, config.snd_cache_fn))
     calc_soundings(client_dses, config.max_workers, cache)
-    return cache
 
-def PFT(cache):
+def PFT():
     print('calculating active pfts...')
-    pfts = calc_pfts(cache, config.max_workers, config.MAX_PLUME_TOP_TS)
+    cache = SignalCache.load(os_join(config.today_dir, config.snd_cache_fn))
+    pfts = calc_pfts(cache, 
+                     config.max_workers, config.MAX_PLUME_TOP_TS)
     df_pfts_calculated = parse_to_dataframe(pfts)
     df_pfts_calculated.to_csv(os_join(config.today_dir, config.pft_fname), index = False)
     _copy_current(config.pft_fname)
@@ -116,10 +117,12 @@ def run_pipeline():
     if not os_exists(os_join(config.today_dir, config.can_frp_fname)):
         print('missing active fire frp predictions.')
         FRP_CAN()
+    if not os_exists(os_join(config.today_dir, config.snd_cache_fn)):
+        DB()
+        PFT()
     if not os_exists(os_join(config.today_dir, config.pft_fname)):
         print('missing pft mesh.')
-        cache = DB()
-        PFT(cache)
+        PFT()
     MAP()
 
 if __name__ == "__main__":
