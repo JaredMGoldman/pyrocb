@@ -9,6 +9,7 @@ from analysis.mapping.active_incident_map import ActiveFirePerimeterPipeline
 
 from data.clients.gfs_client import GFSClient, GFS
 from data.clients.rrfs_client import RRFSClient, RRFS
+from data.clients.rrfs_client_para import RRFSClientParallel
 from utils.constants import CACHE_BASE_DIR
 
 def make_n_len_str(value, n=2):
@@ -36,7 +37,7 @@ rave_lookback = 3
 fxx_range = 48 if DEBUG_MODE else 72
 fxx_freq = 2
 plot_freq = 6
-clients =  [GFSClient] if DEBUG_MODE else [RRFSClient]
+clients =  [GFSClient] if DEBUG_MODE else [RRFSClientParallel]
 fx_names = [GFS] if DEBUG_MODE else [RRFS]
 active_fire_class = ActiveFirePerimeterPipeline
 max_workers = 48
