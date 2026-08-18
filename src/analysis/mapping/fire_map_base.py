@@ -37,7 +37,7 @@ def _worker_render_single_plot_frp(fire_key, frp_csv_path):
         fire_sub = fire_sub.sort_values('time')
 
         # 1. Reduced figure dimensions & lower DPI (75 vs 150 cuts Base64 payload by ~75%)
-        fig, ax = plt.subplots(figsize=(4.2, 2.4), dpi=75)
+        fig, ax = plt.subplots(figsize=(4.2, 2.4), dpi=200)
         
         has_plot = False
         if 'fc_hybrid' in fire_sub.columns and not fire_sub['fc_hybrid'].isna().all():
@@ -51,7 +51,7 @@ def _worker_render_single_plot_frp(fire_key, frp_csv_path):
             plt.close(fig)
             return fire_key, f"<p style='color:gray;'>FRP data coordinates are empty for {fire_key}.</p>"
             
-        ax.set_title(f"FRP Forecast Trend: {fire_name}", fontsize=8, fontweight='bold')
+        ax.set_title(f"{fire_name}: FRP Forecast Trend", fontsize=8, fontweight='bold')
         ax.set_ylabel("Total FRP [MW]", fontsize=7)
         ax.grid(True, linestyle=':', alpha=0.6)
         ax.legend(loc='upper left', fontsize=6)
@@ -63,7 +63,7 @@ def _worker_render_single_plot_frp(fire_key, frp_csv_path):
         
         # 2. Save compressed JPEG instead of uncompressed high-DPI PNG
         buf = io.BytesIO()
-        plt.savefig(buf, format='jpeg', pil_kwargs={'quality': 81, 'optimize': True})
+        plt.savefig(buf, format='jpeg', pil_kwargs={'quality': 87, 'optimize': True})
         buf.seek(0)
         encoded = base64.b64encode(buf.read()).decode('utf-8')
         plt.close(fig)
@@ -75,7 +75,7 @@ def _worker_render_single_plot_frp(fire_key, frp_csv_path):
         return fire_key, f"<p style='color:red;'>Error generating FRP plot: {str(e)}</p>"
 
 
-def _worker_render_single_plot(fire_key, subset_df, fx_name):
+def _worker_render_single_plot(fire_key, fire_name, subset_df, fx_name):
     matplotlib.use('Agg')
     if subset_df.empty:
         return fire_key, "<p style='color:gray;'>No PFT metrics found overlaying or near this footprint.</p>"
@@ -87,17 +87,17 @@ def _worker_render_single_plot(fire_key, subset_df, fx_name):
         aggfunc='mean'
     ).sort_index()
 
-    fig, ax = plt.subplots(figsize=(4.2, 2.4), dpi=75)
+    fig, ax = plt.subplots(figsize=(4.2, 2.4), dpi=250)
     fig.patch.set_facecolor("#FFFFFF")
     ax.set_facecolor("#FFFFFF")
     
-    x_labels = pd.to_datetime([pd.to_datetime(t).strftime('%m/%d %H:%M') for t in pivoted_df.index])
+    time_index = pd.to_datetime(pivoted_df.index)
     colors = plt.cm.tab10.colors
 
     for i, temp in enumerate(config.MAX_PLUME_TOP_TS):
         if temp in pivoted_df.columns:
             ax.plot(
-                x_labels, 
+                time_index, 
                 pivoted_df[temp].values, 
                 color=colors[i % len(colors)], 
                 linewidth=1.2, 
@@ -105,8 +105,21 @@ def _worker_render_single_plot(fire_key, subset_df, fx_name):
                 markersize=2, 
                 label=f"{temp}°C"
             )
+
+    vline_colors = ['green', 'orange', 'blue', 'purple', 'red', 'brown']  # Day 1: Green, Day 2: Orange, Day 3: Blue...
+    unique_days = pd.Series(time_index.floor('D')).unique()
+
+    for i, day in enumerate(unique_days):
+        if day >= time_index.min() and day <= time_index.max():
+            ax.axvline(
+                x=day, 
+                color=vline_colors[i % len(vline_colors)], 
+                linestyle='--', 
+                linewidth=1.0, 
+                alpha=0.8
+            )
     
-    ax.set_title(f"PFT {fx_name.upper()} Prediction", color='black', fontsize=8, fontweight='bold')
+    ax.set_title(f"{fire_name}: PFT {fx_name.upper()} Prediction", color='black', fontsize=8, fontweight='bold')
     ax.set_ylabel("PFT Value (GW)", color='black', fontsize=7)
     ax.set_yscale('log')
     ax.tick_params(colors='black', labelsize=6)
@@ -120,7 +133,7 @@ def _worker_render_single_plot(fire_key, subset_df, fx_name):
 
     # Compressed JPEG export
     buf = io.BytesIO()
-    plt.savefig(buf, format='jpeg', pil_kwargs={'quality': 81, 'optimize': True})
+    plt.savefig(buf, format='jpeg', pil_kwargs={'quality': 87, 'optimize': True})
     plt.close(fig)
     buf.seek(0)
     
@@ -473,6 +486,7 @@ class FireMapBase(ABC):
             prepared_tasks = []
             for f_idx in tqdm.tqdm(fire_manifest_df.fire_index_id.values, desc='preprocessing pft subsets'):
                 geom = fire_manifest_df[fire_manifest_df.fire_index_id == f_idx]['wkt_geometry'].item()
+                fire_name = fire_manifest_df[fire_manifest_df.fire_index_id == f_idx]['name'].item()
 
                 if not geom:
                     continue
@@ -493,7 +507,7 @@ class FireMapBase(ABC):
                     coordinate_mask = (clean_pft['lon'] == nearest_point.x) & (clean_pft['lat'] == nearest_point.y)
                     subset_df = clean_pft[coordinate_mask].copy()
                     
-                prepared_tasks.append((f_idx, subset_df))
+                prepared_tasks.append((f_idx, fire_name, subset_df))
                 
             fires_layer_group = folium.FeatureGroup(name="Active Fires", show=True)
 
@@ -503,8 +517,8 @@ class FireMapBase(ABC):
             frp_chart = {}
             with ProcessPoolExecutor(max_workers=config.max_workers) as executor:
                 futures = [
-                    executor.submit(_worker_render_single_plot, fire_key, sub_df, config.fx_names[0])
-                    for fire_key, sub_df in prepared_tasks
+                    executor.submit(_worker_render_single_plot, fire_key, fire_name, sub_df, config.fx_names[0])
+                    for fire_key, fire_name, sub_df in prepared_tasks
                 ]
                 
                 for f in tqdm.tqdm(as_completed(futures), total=len(prepared_tasks), desc="PFT Popup Plots"):
