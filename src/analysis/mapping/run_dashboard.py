@@ -1,6 +1,8 @@
 from os.path import join as os_join
 from os.path import exists as os_exists
 import pandas as pd
+from shapely import box
+
 from analysis.mapping.pft_gen_parallel import pull_data, group_client_dses, \
                                         calc_pfts, calc_soundings, \
                                         parse_to_dataframe
@@ -33,12 +35,7 @@ def RAVE():
                     output_csv = os_join(config.today_dir, config.active_rave_fn))
         downloaded_files = pipeline.download_rave_files(last_n_days=config.rave_lookback, 
                                                         reference_date=config.now_dt)
-        dropped_fires = pipeline.extract_frp_data_parallel_files(downloaded_files, config.max_workers)
-        if config.PRUNE_BOOL:
-            print("[+] pruning fires")
-            prune_inactive_fires(dropped_fires,
-                                os_join(config.today_dir, 
-                                        config.active_fire_fname))
+        pipeline.extract_frp_data_parallel_files(downloaded_files, config.max_workers)
                             
         _copy_current(config.active_rave_fn)
     except Exception as e:
@@ -75,11 +72,12 @@ def DB():
     client_dses = group_client_dses(dses, config.fx_names)
     cache = SignalCache(db_path=os_join(config.today_dir, config.snd_cache_fn))
     calc_soundings(client_dses, config.max_workers, cache)
-    return cache
 
-def PFT(cache):
+def PFT():
     print('calculating active pfts...')
-    pfts = calc_pfts(cache, config.max_workers)
+    cache = SignalCache.load(os_join(config.today_dir, config.snd_cache_fn))
+    pfts = calc_pfts(cache, 
+                     config.max_workers, config.MAX_PLUME_TOP_TS)
     df_pfts_calculated = parse_to_dataframe(pfts)
     df_pfts_calculated.to_csv(os_join(config.today_dir, config.pft_fname), index = False)
     _copy_current(config.pft_fname)
@@ -103,23 +101,36 @@ def MAP():
                           os_join(config.REMOTE_DIR, "latest.html"),
                           hostname = config.HOSTNAME, username=config.USERNAME)
 
+def PRUNE():
+    if config.PRUNE_BOOL:
+        print("[+] pruning fires")
+        prune_inactive_fires(os_join(config.today_dir, 
+                                    config.active_fire_fname),
+                            os_join(config.today_dir, 
+                                    config.active_rave_fn),
+                            box(*config.bounds))
+
 def run_pipeline():
     if not os_exists(os_join(config.today_dir, config.active_fire_fname)):
         print('missing active fire polygons.')
         FETCH()
         RAVE()
+        PRUNE()
         FRP_CAN()
     if not os_exists(os_join(config.today_dir, config.active_rave_fn)):
         print('missing active fire rave values.')
         RAVE()
+        PRUNE()
         FRP_CAN()
     if not os_exists(os_join(config.today_dir, config.can_frp_fname)):
         print('missing active fire frp predictions.')
         FRP_CAN()
+    if not os_exists(os_join(config.today_dir, config.snd_cache_fn)):
+        DB()
+        PFT()
     if not os_exists(os_join(config.today_dir, config.pft_fname)):
         print('missing pft mesh.')
-        cache = DB()
-        PFT(cache)
+        PFT()
     MAP()
 
 if __name__ == "__main__":

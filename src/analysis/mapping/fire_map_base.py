@@ -24,113 +24,133 @@ from analysis.mapping.timeslider_choropleth_utc import TimeSliderChoropleth as T
 
 
 def _worker_render_single_plot_frp(fire_key, frp_csv_path):
-    """
-    Isolated worker function running inside ProcessPoolExecutor.
-    Matches the GeoJSON feature name to the FRP prediction timeseries CSV 
-    (swapping spaces for underscores) and returns a base64 HTML string of the plot.
-    """
-    matplotlib.use('Agg')  # Ensure non-interactive backend inside process pools
-    
+    matplotlib.use('Agg')
     try:
-        # Load the FRP predictions timeseries dataset
         frp_df = pd.read_csv(frp_csv_path)
-        
-        # Filter rows matching this specific fire name
         fire_sub = frp_df[frp_df['fire_idx'] == fire_key].copy()
 
-        fire_name = fire_sub.iloc[0].fire_name.replace('_', ' ').upper()
-        
         if fire_sub.empty:
             return fire_key, f"<p style='color:gray;'>No FRP forecast data available for {fire_key}.</p>"
-        
-        # Format timeline index
+
+        fire_name = fire_sub.iloc[0].fire_name.replace('_', ' ').upper()
         fire_sub['time'] = pd.to_datetime(fire_sub['time'])
         fire_sub = fire_sub.sort_values('time')
-        
-        # Setup plot canvas
-        fig, ax = plt.subplots(figsize=(5, 3))
+
+        # 1. Reduced figure dimensions & lower DPI (75 vs 150 cuts Base64 payload by ~75%)
+        fig, ax = plt.subplots(figsize=(4.2, 2.4), dpi=200)
         
         has_plot = False
-        if 'fc_yesterday' in fire_sub.columns and not fire_sub['fc_yesterday'].isna().all():
-            ax.plot(fire_sub['time'], fire_sub['fc_yesterday'], color='black', linestyle='--', alpha=0.7, label='Yesterday 06Z')
-            has_plot = True
-        if 'fc_latest' in fire_sub.columns and not fire_sub['fc_latest'].isna().all():
-            ax.plot(fire_sub['time'], fire_sub['fc_latest'], color='red', linestyle='-', linewidth=1.2, label='Latest 06Z')
-            has_plot = True
         if 'fc_hybrid' in fire_sub.columns and not fire_sub['fc_hybrid'].isna().all():
-            ax.plot(fire_sub['time'], fire_sub['fc_hybrid'], color='green', linestyle='-', linewidth=1.8, label='Hybrid Blend')
+            ax.plot(fire_sub['time'], fire_sub['fc_hybrid'], color='green', linestyle='-', linewidth=1.5, label='Hybrid Blend')
             has_plot = True
         if 'rave_historical' in fire_sub.columns and not fire_sub['rave_historical'].isna().all():
-            ax.plot(fire_sub['time'], fire_sub['rave_historical'], color='gray', linestyle='-', linewidth=1.8, label='RAVE Observations')
+            ax.plot(fire_sub['time'], fire_sub['rave_historical'], color='gray', linestyle='-', linewidth=1.5, label='RAVE Observations')
             has_plot = True
             
         if not has_plot:
             plt.close(fig)
             return fire_key, f"<p style='color:gray;'>FRP data coordinates are empty for {fire_key}.</p>"
             
-        ax.set_title(f"FRP Forecast Trend: {fire_name}", fontsize=9, fontweight='bold')
-        ax.set_ylabel("Total FRP [MW]", fontsize=8)
+        ax.set_title(f"{fire_name}: FRP Forecast Trend", fontsize=8, fontweight='bold')
+        ax.set_ylabel("Total FRP [MW]", fontsize=7)
         ax.grid(True, linestyle=':', alpha=0.6)
-        ax.legend(loc='upper left', fontsize=7)
-        ax.tick_params(axis='both', labelsize=7)
+        ax.legend(loc='upper left', fontsize=6)
+        ax.tick_params(axis='both', labelsize=6)
         ax.xaxis.set_major_locator(mdates.HourLocator(interval=config.plot_freq))
         ax.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d %H:%M'))
         plt.xticks(rotation=20)
         plt.tight_layout()
         
-        # Save figure context to memory buffer as Base64 HTML string
+        # 2. Save compressed JPEG instead of uncompressed high-DPI PNG
         buf = io.BytesIO()
-        plt.savefig(buf, format='png', dpi=150)
+        plt.savefig(buf, format='jpeg', pil_kwargs={'quality': 87, 'optimize': True})
         buf.seek(0)
         encoded = base64.b64encode(buf.read()).decode('utf-8')
         plt.close(fig)
         
-        chart_html = f'<img src="data:image/png;base64,{encoded}" style="max-width:100%; height:auto;">'
+        chart_html = f'<img src="data:image/jpeg;base64,{encoded}" style="max-width:100%; height:auto;">'
         return fire_key, chart_html
         
     except Exception as e:
         return fire_key, f"<p style='color:red;'>Error generating FRP plot: {str(e)}</p>"
 
-def _worker_render_single_plot(fire_key, subset_df, fx_name):
-    """
-    Isolated worker function running inside ProcessPoolExecutor.
-    Receives a tiny, pre-sliced subset_df and renders the line plot.
-    """
-    
+
+def _worker_render_single_plot(fire_key, fire_name, subset_df, fx_name):
+    matplotlib.use('Agg')
     if subset_df.empty:
         return fire_key, "<p style='color:gray;'>No PFT metrics found overlaying or near this footprint.</p>"
 
-    # 1. Group by time and calculate average
-    time_series = subset_df.groupby('time')['value'].mean().sort_index()
+    pivoted_df = subset_df.pivot_table(
+        index='time', 
+        columns='plume_temp', 
+        values='value', 
+        aggfunc='mean'
+    ).sort_index()
 
-    # 2. Render the matplotlib chart entirely in-memory
-    fig, ax = plt.subplots(figsize=(4.5, 2.5), dpi=100)
+    fig, ax = plt.subplots(figsize=(4.2, 2.4), dpi=250)
     fig.patch.set_facecolor("#FFFFFF")
     ax.set_facecolor("#FFFFFF")
     
-    x_labels = pd.to_datetime([pd.to_datetime(t).strftime('%m/%d %H:%M') for t in time_series.index])
-    ax.plot(x_labels, time_series.values, color='#e74c3c', linewidth=2, marker='o', markersize=4)
+    time_index = pd.to_datetime(pivoted_df.index)
+    colors = plt.cm.tab10.colors
+
+    for i, temp in enumerate(config.MAX_PLUME_TOP_TS):
+        if temp in pivoted_df.columns:
+            ax.plot(
+                time_index, 
+                pivoted_df[temp].values, 
+                color=colors[i % len(colors)], 
+                linewidth=1.2, 
+                marker='o', 
+                markersize=2, 
+                label=f"{temp}°C"
+            )
+
+    vline_colors = ['green', 'orange', 'blue', 'purple', 'red', 'brown']  # Day 1: Green, Day 2: Orange, Day 3: Blue...
+    unique_days = pd.Series(time_index.floor('D')).unique()
+
+    for i, day in enumerate(unique_days):
+        if day >= time_index.min() and day <= time_index.max():
+            ax.axvline(
+                x=day, 
+                color=vline_colors[i % len(vline_colors)], 
+                linestyle='--', 
+                linewidth=1.0, 
+                alpha=0.8
+            )
     
-    ax.set_title(f"PFT {fx_name.upper()} Prediction", color='black', fontsize=10, fontweight='bold')
-    ax.set_ylabel("log PFT Value (GW)", color='black', fontsize=8)
+    ax.set_title(f"{fire_name}: PFT {fx_name.upper()} Prediction", color='black', fontsize=8, fontweight='bold')
+    ax.set_ylabel("PFT Value (GW)", color='black', fontsize=7)
     ax.set_yscale('log')
-    ax.tick_params(colors='black', labelsize=7)
+    ax.tick_params(colors='black', labelsize=6)
     ax.xaxis.set_major_locator(mdates.HourLocator(interval=config.plot_freq))
     ax.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d %H:%M'))
     ax.grid(True, color='#444444', linestyle='--', alpha=0.5)
-    
-    plt.xticks(rotation=30, ha='right')
+    ax.legend(title="Plume Temp", fontsize=5, title_fontsize=6, loc='upper left')
+
+    plt.xticks(rotation=25, ha='right')
     plt.tight_layout()
 
-    # Save to a byte buffer object
+    # Compressed JPEG export
     buf = io.BytesIO()
-    plt.savefig(buf, format='png', facecolor=fig.get_facecolor(), edgecolor='none')
+    plt.savefig(buf, format='jpeg', pil_kwargs={'quality': 87, 'optimize': True})
     plt.close(fig)
     buf.seek(0)
     
     base64_img = base64.b64encode(buf.read()).decode('utf-8')
-    html_img_tag = f'<img src="data:image/png;base64,{base64_img}" width="450" height="250">'
+    html_img_tag = f'<img src="data:image/jpeg;base64,{base64_img}" width="420" height="220">'
     return fire_key, html_img_tag
+
+
+def round_geometry_coords(geom_dict, precision=4):
+    """Recursively truncates geometry coordinates to 4 decimal places (~11m accuracy)."""
+    if "coordinates" in geom_dict:
+        def _round(coords):
+            if isinstance(coords[0], (int, float)):
+                return [round(c, precision) for c in coords]
+            return [_round(c) for c in coords]
+        geom_dict["coordinates"] = _round(geom_dict["coordinates"])
+    return geom_dict
 
 class FireMapBase(ABC):
     def __init__(self):
@@ -216,37 +236,6 @@ class FireMapBase(ABC):
             return df
         return None
 
-    def interpolate_pft_field(self, pft_df):
-        """Interpolates PFT onto a grid and masks by land."""
-        if pft_df.empty: return None, None
-        
-        extent = config.bounds
-        grid_lons = np.linspace(extent[0], extent[1], 300)
-        grid_lats = np.linspace(extent[2], extent[3], 200)
-        grid_x, grid_y = np.meshgrid(grid_lons, grid_lats)
-        
-        frames = []
-        clean_df = pft_df[np.isfinite(pft_df['value'])]
-        vmin, vmax = clean_df['value'].min(), np.percentile(clean_df['value'], 99)
-        norm = mcolors.LogNorm(vmin=max(vmin, 1.0), vmax=vmax)
-        cmap = plt.get_cmap('autumn')
-
-        for timestamp, group in clean_df.groupby('time'):
-            grid_z = griddata(
-                (group['lon'], group['lat']), group['value'], 
-                (grid_x, grid_y), method='linear'
-            )
-            
-            for i in range(len(grid_lats)):
-                for j in range(len(grid_lons)):
-                    if not self.unified_land_mask.contains(shape({"type": "Point", "coordinates": [grid_lons[j], grid_lats[i]]})):
-                        grid_z[i, j] = np.nan
-            
-            rgba = cmap(norm(grid_z))
-            rgba[np.isnan(grid_z)] = [0, 0, 0, 0]
-            frames.append({"time": timestamp, "image": np.flipud(rgba)})
-            
-        return frames, extent
 
     def _generate_html_legend(self, levels, cmap_name='viridis_r'):
         """Generates a responsive floating CSS legend for discrete level steps."""
@@ -297,11 +286,11 @@ class FireMapBase(ABC):
         return legend_html
 
     def compile_integrated_map(self, pft_path, manifest_path,
-                               output_html="weekly_fire_map.html", 
-                               cmap_name='autumn', frp_csv_path = 'cache'):
+                           output_html="weekly_fire_map.html", 
+                           cmap_name='autumn', frp_csv_path='cache'):
         """
         Builds a spatiotemporal hourly-precision grid of PFT values over land mass 
-        with floating legends and static fire vectors embedding dynamic trend popups.
+        with a functional dropdown selector to dynamically repaint plume temperature values.
         """
         print("Compiling spatiotemporal map...")
         fire_manifest_df = pd.read_csv(manifest_path)
@@ -316,8 +305,8 @@ class FireMapBase(ABC):
         extent = config.bounds 
         grid_res = config.grid_res         
         
-        lon_edges = np.linspace(extent[0], extent[1], grid_res[1] + 1)
-        lat_edges = np.linspace(extent[2], extent[3], grid_res[0] + 1)
+        lon_edges = np.linspace(extent[0], extent[2], grid_res[1] + 1)
+        lat_edges = np.linspace(extent[1], extent[3], grid_res[0] + 1)
         
         grid_features = []
         cell_idx = 0
@@ -332,10 +321,11 @@ class FireMapBase(ABC):
                 if self.unified_land_mask.intersects(cell_poly):
                     land_cell = self.unified_land_mask.intersection(cell_poly)
                     if not land_cell.is_empty:
+                        rounded_geom = round_geometry_coords(mapping(land_cell), precision=4)
                         feature = {
                             "type": "Feature",
                             "id": str(cell_idx),
-                            "geometry": mapping(land_cell),
+                            "geometry": rounded_geom,
                             "properties": {}
                         }
                         grid_features.append(feature)
@@ -344,104 +334,191 @@ class FireMapBase(ABC):
 
         geo_path_collection = {"type": "FeatureCollection", "features": grid_features}
 
-        clean_pft = pft_df[np.isfinite(pft_df['value'])].copy()
-        timestamps = sorted(clean_pft['time'].unique())
-        
+        # 1. Setup color scale and levels
         levels = [5, 7.5, 10, 25, 50, 75, 100, 250, 500, 750, 1000]
-
-        # Setup discrete BoundaryNorm using viridis_r
         cmap = plt.get_cmap(cmap_name)
         norm = mcolors.BoundaryNorm(levels, ncolors=cmap.N, extend='both')
 
-        style_dict = {str(idx): {} for idx in range(cell_idx)}
+        clean_pft = pft_df[np.isfinite(pft_df['value'])].copy()
+        plume_levels = sorted(clean_pft['plume_temp'].unique())
 
-        for ts in timestamps:
-            ts_group = clean_pft[clean_pft['time'] == ts]
-            if len(ts_group) < 4: continue
-            
-            ts_naive = pd.to_datetime(ts, utc=True).tz_localize(None)
-            unix_sec = str(int(ts_naive.timestamp()))
-            
-            points = ts_group[['lon', 'lat']].values
-            values = ts_group['value'].values
-            
-            grid_coords = [(c[0], c[1]) for c in cell_centroids]
-            interpolated_values = griddata(points, values, grid_coords, method='linear')
-            
-            for val, cell_info in zip(interpolated_values, cell_centroids):
-                c_idx = str(cell_info[2])
-                # Hide cell if NaN or below minimum lower boundary
-                if np.isnan(val) or val < levels[0]:
-                    style_dict[c_idx][unix_sec] = {'color': '#000000', 'opacity': 0.0}
-                else:
-                    # BoundaryNorm maps val to discrete viridis_r bins
+        # 2. Build style dictionaries for ALL plume temperatures
+        plume_style_dicts = {}
+
+        for temp in plume_levels:
+            pft_temp_df = clean_pft[clean_pft['plume_temp'] == temp]
+            timestamps = sorted(pft_temp_df['time'].unique())
+
+            # Keep dictionary structure lean (no pre-populating zero values)
+            style_dict = {}
+
+            for ts in timestamps:
+                ts_group = pft_temp_df[pft_temp_df['time'] == ts]
+                if len(ts_group) < 4:
+                    continue
+
+                ts_naive = pd.to_datetime(ts, utc=True).tz_localize(None)
+                unix_sec = str(int(ts_naive.timestamp()))
+
+                points = ts_group[['lon', 'lat']].values
+                values = ts_group['value'].values
+
+                grid_coords = [(c[0], c[1]) for c in cell_centroids]
+                interpolated_values = griddata(points, values, grid_coords, method='linear')
+
+                for val, cell_info in zip(interpolated_values, cell_centroids):
+                    # SPARSE ENCODING: Skip NaNs and values below min threshold entirely
+                    if np.isnan(val) or val < levels[0]:
+                        continue
+
+                    c_idx = str(cell_info[2])
                     rgba = cmap(norm(val))
                     hex_color = mcolors.to_hex(rgba)
-                    style_dict[c_idx][unix_sec] = {
-                        'color': hex_color,
-                        'opacity': 0.65  # Adjust opacity for visibility
-                    }
+                    
+                    if c_idx not in style_dict:
+                        style_dict[c_idx] = {}
 
-        TimeSliderChoroplethUTC(
+                    style_dict[c_idx][unix_sec] = hex_color
+
+                    # {
+                    #     'color': hex_color,
+                    #     'opacity': 0.65
+                    # }
+
+            plume_style_dicts[str(temp)] = style_dict
+
+        default_temp_str = str(plume_levels[0])
+
+        # Extract ALL timestamps across all plume temperatures for the slider axis
+        all_timestamps = set()
+        for temp_dict in plume_style_dicts.values():
+            for cell_dict in temp_dict.values():
+                all_timestamps.update(cell_dict.keys())
+
+        # Build a minimal 1-cell timeline dictionary to pass to Folium (~1 KB)
+        sample_cell_id = next(iter(plume_style_dicts[default_temp_str].keys())) if plume_style_dicts[default_temp_str] else "0"
+        minimal_styledict = {
+            sample_cell_id: {ts: "#000000" for ts in sorted(all_timestamps)}
+        }
+
+        # 3. Add TimeSliderChoropleth with the minimal timeline structure
+        time_slider = TimeSliderChoroplethUTC(
             data=geo_path_collection,
-            styledict=style_dict,
+            styledict=minimal_styledict,
             name="Predictive PFT Forward Mesh Grid",
             stroke_width=0.0,
             date_options="YYYY-MM-DD_HH:mm [UTC]"
-        ).add_to(m)
+        )
+        time_slider.add_to(m)
 
+        slider_var_name = time_slider.get_name()
+
+        options_html = "".join([
+            f'<option value="{temp}" {"selected" if str(temp)==default_temp_str else ""}>{temp}°C</option>'
+            for temp in plume_levels
+        ])
+
+        # 4. Inject Control JS & Hydrate Full Grid on Load
+        plume_control_html = f"""
+        <div id="plume-temp-container" style="
+            position: fixed; 
+            top: 10px; 
+            right: 10px; 
+            z-index: 9999; 
+            background: #ffffff; 
+            padding: 8px 12px; 
+            border-radius: 6px; 
+            box-shadow: 0 2px 6px rgba(0,0,0,0.3); 
+            font-family: Arial, sans-serif; 
+            font-size: 12px;
+            border: 1px solid #ccc;
+        ">
+            <label for="plume-temp-select" style="font-weight: bold; margin-right: 5px; color: #333;">Plume Temp:</label>
+            <select id="plume-temp-select" style="padding: 3px 6px; border-radius: 4px; border: 1px solid #aaa;" onchange="switchPlumeTemp(this.value)">
+                {options_html}
+            </select>
+        </div>
+
+        <script>
+            var masterPlumeStyles = {json.dumps(plume_style_dicts)};
+
+            function switchPlumeTemp(selectedTemp) {{
+                var newStyles = masterPlumeStyles[selectedTemp];
+                var updateFunc = window["updateTimeSliderStyle_{slider_var_name}"];
+
+                if (typeof updateFunc === "function" && newStyles) {{
+                    updateFunc(newStyles);
+                }} else {{
+                    console.warn("TimeSlider repaint function not found for layer {slider_var_name}");
+                }}
+            }}
+
+            // Safe initializer: Polls until Leaflet has attached element IDs to the DOM
+            function initPlumeMesh() {{
+                var updateFunc = window["updateTimeSliderStyle_{slider_var_name}"];
+                var pathsReady = document.querySelector("path[id^='{slider_var_name}-feature-']");
+
+                if (typeof updateFunc === "function" && pathsReady) {{
+                    switchPlumeTemp("{default_temp_str}");
+                }} else {{
+                    setTimeout(initPlumeMesh, 50); // Re-check every 50ms until DOM paths are bound
+                }}
+            }}
+
+            // Trigger initialization
+            initPlumeMesh();
+        </script>
+        """
+        m.get_root().html.add_child(folium.Element(plume_control_html))
+
+        # 5. Add Legend
         legend_html_content = self._generate_html_legend(levels, cmap_name=cmap_name)
         m.get_root().html.add_child(folium.Element(legend_html_content))
 
-        
-        if not type(fire_manifest_df) is None:
+        # 6. Active Fires Feature Layer
+        if fire_manifest_df is not None and not fire_manifest_df.empty:
             pft_points = []
-            for lon, lat in tqdm.tqdm(zip(clean_pft['lon'], clean_pft['lat']), desc = 'formatting STR tree', total = len(clean_pft['lat'])):
+            for lon, lat in tqdm.tqdm(zip(clean_pft['lon'], clean_pft['lat']), desc='formatting STR tree', total=len(clean_pft['lat'])):
                 pft_points.append(Point(lon, lat))
 
             spatial_tree = STRtree(pft_points)
 
             prepared_tasks = []
-            for f_idx in tqdm.tqdm(fire_manifest_df.fire_index_id.values, desc = 'preprocessing pft subsets'):
+            for f_idx in tqdm.tqdm(fire_manifest_df.fire_index_id.values, desc='preprocessing pft subsets'):
                 geom = fire_manifest_df[fire_manifest_df.fire_index_id == f_idx]['wkt_geometry'].item()
+                fire_name = fire_manifest_df[fire_manifest_df.fire_index_id == f_idx]['name'].item()
 
                 if not geom:
                     continue
                 
                 try:
-                    fire_poly = shapely.wkt.loads(geom) # shape(geom)
+                    fire_poly = shapely.wkt.loads(geom)
                 except Exception:
                     continue
                     
-                # Query spatial tree for points inside the geometry's bounding box
                 indices_in_bbox = spatial_tree.query(fire_poly)
-                
-                # Filter down to true containment
                 inside_indices = [idx for idx in indices_in_bbox if fire_poly.contains(pft_points[idx])]
                 
                 if inside_indices:
-                    # Sliced subset of the dataframe
                     subset_df = clean_pft.iloc[inside_indices].copy()
                 else:
-                    # Fallback: Find the nearest point using the spatial tree
                     nearest_geom_idx = spatial_tree.nearest(fire_poly)
-                    # Grab all rows that share these exact coordinates (in case of multiple timestamps)
                     nearest_point = pft_points[nearest_geom_idx]
                     coordinate_mask = (clean_pft['lon'] == nearest_point.x) & (clean_pft['lat'] == nearest_point.y)
                     subset_df = clean_pft[coordinate_mask].copy()
                     
-                prepared_tasks.append((f_idx, subset_df))
+                prepared_tasks.append((f_idx, fire_name, subset_df))
+                
             fires_layer_group = folium.FeatureGroup(name="Active Fires", show=True)
 
             print(f"[+] Launching parallel rendering across worker pools for {len(prepared_tasks)} fires...")
             
-            # 2. Parallel Generation Stage: Distribute processing across CPU nodes
             pft_chart = {}
             frp_chart = {}
             with ProcessPoolExecutor(max_workers=config.max_workers) as executor:
                 futures = [
-                    executor.submit(_worker_render_single_plot, fire_key, sub_df, config.fx_names[0])
-                    for fire_key, sub_df in prepared_tasks
+                    executor.submit(_worker_render_single_plot, fire_key, fire_name, sub_df, config.fx_names[0])
+                    for fire_key, fire_name, sub_df in prepared_tasks
                 ]
                 
                 for f in tqdm.tqdm(as_completed(futures), total=len(prepared_tasks), desc="PFT Popup Plots"):
@@ -464,15 +541,13 @@ class FireMapBase(ABC):
                 this_fire = fire_manifest_df[fire_manifest_df.fire_index_id == f_key]
 
                 f_name = this_fire['name'].item()
-                f_id = this_fire['fire_id'].item() # props.get('fireid', 'N/A')
-                f_start = this_fire['start_date'].item() # props.get('t_start', 'N/A')
-                f_status = this_fire['status'].item() # props.get('status', 'N/A')
+                f_id = this_fire['fire_id'].item()
+                f_start = this_fire['start_date'].item()
+                f_status = this_fire['status'].item()
 
-                # Pull the pre-compiled base64 chart layout directly from the lookup dictionary
                 pft_html = pft_chart.get(f_key, "<p style='color:gray;'>Error generating plot data.</p>")
                 frp_html = frp_chart.get(f_key, "<p style='color:gray;'>Error generating plot data.</p>")
 
-                # Build dark-themed popup card structural wrapper
                 popup_content = f"""
                 <div style="font-family: Arial, sans-serif; font-size: 12px; color: #FFFFFF; background-color: #FFFFFF; padding: 10px; border-radius: 4px; width: 460px;">
                     <h4 style="margin: 0 0 5px 0; color: #e74c3c; border-bottom: 1px solid #444;">{f_name}</h4>
@@ -493,11 +568,12 @@ class FireMapBase(ABC):
                 iframe = folium.IFrame(html=popup_content, width=480, height=360)
                 custom_popup = folium.Popup(iframe, max_width=500)
                 
-                feature = {"type": "Feature",
-                            "properties": {
-                                "name": f_name, "fireid": f_id},
-                            "geometry": mapping(shapely.wkt.loads(this_fire['wkt_geometry'].item()))
-                        }
+                feature = {
+                    "type": "Feature",
+                    "properties": {"name": f_name, "fireid": f_id},
+                    "geometry": mapping(shapely.wkt.loads(this_fire['wkt_geometry'].item()))
+                }
+                
                 folium.GeoJson(
                     feature,
                     style_function=lambda x: {
@@ -510,12 +586,14 @@ class FireMapBase(ABC):
                         fields=['name', 'fireid'], 
                         aliases=['Name:', 'ID:']
                     ),
-                    embed=False  # Crucial: Prevent child sub-features from leaking out as distinct layers
+                    embed=False
                 ).add_child(custom_popup).add_to(fires_layer_group)
 
             fires_layer_group.add_to(m)
 
+        # 7. Layer Control
         folium.LayerControl(collapsed=False).add_to(m)
+
         m.save(output_html)
         print(f"[+] Spatiotemporal dashboard generated with hourly slider and colorbar: '{output_html}'")
         return m

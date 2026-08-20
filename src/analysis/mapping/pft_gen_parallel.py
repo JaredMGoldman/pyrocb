@@ -2,7 +2,7 @@
 from data.clients.era5_pl_client import ERA5PLClient
 from utils.constants import  ERA5
 
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, as_completed, wait, FIRST_COMPLETED
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
 import cartopy.io.shapereader as shapereader
@@ -127,13 +127,14 @@ def transform_ds_for_parallel(ds, features=['t', 'r', 'gh', 'u', 'v'],
 def parse_to_dataframe(raw_data):
     """Converts the nested tuple structure into a clean Pandas DataFrame."""
     records = []
-    for (time, val), ((lat, lon), data_name) in raw_data:
+    for (time, val, max_temp), ((lat, lon), data_name) in raw_data:
         records.append({
             'time': pd.to_datetime(time),
             'lat': lat,
             'lon': lon,
             'data_name': data_name,
-            'value': val
+            'value': val,
+            'plume_temp': max_temp
         })
     return pd.DataFrame(records)
 
@@ -370,51 +371,66 @@ def calc_soundings(ds_dict, max_workers, cache_system):
             if write_buffer:
                 cache_system.append_batch(write_buffer)
 
+def generate_tasks(record_stream, max_plume_temps):
+    """
+    Lazily expands each record across all target max_plume_temps.
+    """
+    for record in record_stream:
+        for temp in max_plume_temps:
+            yield record, temp
 
 # --- FIX 3: BULK REAM STREAMING WORKER ---
-def pft_worker_direct(sounding_payload):
+def pft_worker_direct(record, max_plume_temp):
     """
-    Accepts the direct payload unpacked out of the binary database index stream.
+    Processes a single sounding record against a specific plume temperature.
     """
-    (snd, (key_val, time, name)) = sounding_payload
+    snd, (key_val, time, name) = record
+    
     time_dt = pd.to_datetime(snd.profile.time[0], format='%y%m%d/%H%M')
-    pft_val = pft(snd, moisture_ratio=10.0, fire_elevation=0)
-    return ((time_dt, pft_val), (key_val, name))
+    pft_val = pft(snd, moisture_ratio=10.0, fire_elevation=0, MAX_PLUME_TOP_T=max_plume_temp)
+    
+    # Returning max_plume_temp alongside the result keeps data traceable
+    return ((time_dt, pft_val, max_plume_temp), (key_val, name))
 
-
-def calc_pfts(cache_system, max_workers):
-    """
-    Streams records out of the database chunk-by-chunk to keep memory footprints low.
-    """
+def calc_pfts(cache_system, max_workers, max_plume_temps):
     pfts = []
     
-    # We use a processing window pool to prevent piling up futures backlogs in RAM
     with ProcessPoolExecutor(max_workers=max_workers) as ppex:
-        record_stream = cache_system.stream_records(chunk_size=50000)
-        futures = set()
+        # Stream raw records from DB
+        raw_stream = cache_system.stream_records(chunk_size=50000)
         
-        # Fill primary buffer window
-        for _ in range(max_workers * 4):
+        # Lazy generator pairing each record with every target temperature
+        task_stream = generate_tasks(raw_stream, max_plume_temps)
+        
+        futures = set()
+        max_buffer = max_workers * 4
+
+        # 1. Fill initial buffer window
+        for _ in range(max_buffer):
             try:
-                futures.add(ppex.submit(pft_worker_direct, next(record_stream)))
+                record, temp = next(task_stream)
+                futures.add(ppex.submit(pft_worker_direct, record, temp))
             except StopIteration:
                 break
-                
+
+        # 2. Process dynamically as workers complete
         with tqdm.tqdm(desc="PFT Calculation") as pbar:
             while futures:
-                done = list(as_completed(futures))
+                done, futures = wait(futures, return_when=FIRST_COMPLETED)
+                
                 for f in done:
-                    futures.remove(f)
                     out = f.result()
                     pbar.update(1)
                     if out is not None:
                         pfts.append(out)
                         
-                    # Refill the pool tracking pipeline dynamically
+                    # Refill the empty slot with the next task
                     try:
-                        futures.add(ppex.submit(pft_worker_direct, next(record_stream)))
+                        record, temp = next(task_stream)
+                        futures.add(ppex.submit(pft_worker_direct, record, temp))
                     except StopIteration:
                         pass
+
     print("[+] Meteorological matrix calculation complete.")
     return pfts
 
