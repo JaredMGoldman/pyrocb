@@ -8,6 +8,7 @@ from scipy.io import savemat
 import shapely
 from shapely.geometry import Point
 from shapely.strtree import STRtree
+import shutil
 import tqdm
 
 import analysis.mapping.config as config 
@@ -176,8 +177,12 @@ def main():
             not os.path.exists(os_join(this_dir, config.snd_cache_fn)) or \
             os.path.exists(os_join(this_dir, 'pft_for_active_fires.csv')):
             if os.path.exists(os_join(this_dir, 'pft_for_active_fires.csv')):
-                csv_to_mat(os_join(this_dir, 'pft_for_active_fires.csv'), 
-                           os_join(this_dir, f'{daily_dir}_pft_for_active_fires.mat'))
+                if not os.path.exists(os_join(this_dir, f'{daily_dir}_pft_for_active_fires.mat')):
+                    csv_to_mat(os_join(this_dir, 'pft_for_active_fires.csv'), 
+                            os_join(this_dir, f'{daily_dir}_pft_for_active_fires.mat'))
+                if not os.path.exists(os_join(CACHE_BASE_DIR, 'pft_analysis', f'{daily_dir}_pft_for_active_fires.mat')):
+                    shutil.copy(os_join(this_dir, f'{daily_dir}_pft_for_active_fires.mat'), 
+                                os_join(CACHE_BASE_DIR, 'pft_analysis', f'{daily_dir}_pft_for_active_fires.mat'))
                 print(f"generated mat file for {daily_dir}")
             continue
 
@@ -229,6 +234,11 @@ def main():
             out_df.set_index(['fire_idx', 'time', 'plume_temp'], inplace=True)
             out_df.to_csv(os_join(this_dir, "pft_for_active_fires.csv"), index = False)
             print(f"Successfully saved PFT values to {os_join(this_dir, 'pft_for_active_fires.csv')}")
+            csv_to_mat(os_join(this_dir, 'pft_for_active_fires.csv'), 
+                                os_join(this_dir, f'{daily_dir}_pft_for_active_fires.mat'))
+            shutil.copy(os_join(this_dir, f'{daily_dir}_pft_for_active_fires.mat'), 
+                        os_join(CACHE_BASE_DIR, 'pft_analysis', f'{daily_dir}_pft_for_active_fires.mat'))
+            print(f"generated mat file for {daily_dir}")
 
 
 if __name__ == "__main__":
