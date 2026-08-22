@@ -17,3 +17,4 @@ src/data/clients/*.key
 */cache*
 */*/*/*cache*
 !src/analysis/mapping/signal_cache.py
+!src/utils/*_clean.png

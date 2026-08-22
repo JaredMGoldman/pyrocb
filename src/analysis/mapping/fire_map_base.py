@@ -19,6 +19,7 @@ from shapely.ops import unary_union
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import tqdm
 
+from analysis.mapping_utils import add_local_png_favicon
 import analysis.mapping.config as config
 from analysis.mapping.timeslider_choropleth_utc import TimeSliderChoropleth as TimeSliderChoroplethUTC
 
@@ -380,11 +381,6 @@ class FireMapBase(ABC):
 
                     style_dict[c_idx][unix_sec] = hex_color
 
-                    # {
-                    #     'color': hex_color,
-                    #     'opacity': 0.65
-                    # }
-
             plume_style_dicts[str(temp)] = style_dict
 
         default_temp_str = str(plume_levels[0])
@@ -593,7 +589,7 @@ class FireMapBase(ABC):
 
         # 7. Layer Control
         folium.LayerControl(collapsed=False).add_to(m)
-
+        m = add_local_png_favicon(m, config.inspyre_icon_path)
         m.save(output_html)
         print(f"[+] Spatiotemporal dashboard generated with hourly slider and colorbar: '{output_html}'")
         return m

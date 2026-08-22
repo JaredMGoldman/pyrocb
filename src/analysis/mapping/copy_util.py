@@ -20,9 +20,6 @@ def upload_simplified(local_file, remote_file, hostname, username = os.environ['
     finally:
         ssh.close()
 
-import os
-import paramiko
-
 def create_remote_symlink(remote_dir, source_filename, symlink_name="latest.html", hostname="your.server.ip", username="ubuntu"):
     """
     Connects to a remote server using an SSH keypair and atomically creates/overwrites

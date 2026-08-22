@@ -55,6 +55,7 @@ active_fire_fname = 'fire_pipeline_manifest.csv'
 can_frp_fname = 'fire_predictions_timeseries.csv'
 snd_cache_fn = "sounding_pipeline_cache.db"
 pft_fname = "pft_data.csv"
+inspyre_icon_path = f"{get_repo_root()}/src/utils/inspyre_icon.png"
 
 os.makedirs(today_dir, exist_ok=True)
 os.makedirs(current_dir, exist_ok=True)
