@@ -10,12 +10,12 @@ from analysis.mapping.active_incident_map import ActiveFirePerimeterPipeline
 from data.clients.gfs_client import GFSClient, GFS
 from data.clients.rrfs_client import RRFSClient, RRFS
 from data.clients.rrfs_client_para import RRFSClientParallel
-from utils.constants import CACHE_BASE_DIR
+from utils.constants import CACHE_BASE_DIR, get_repo_root
 
 def make_n_len_str(value, n=2):
     return f"%0{n}d" % (int(value),)
 
-DEBUG_MODE = False
+DEBUG_MODE = True
 PRUNE_BOOL = True
 LATEST_BOOL = True
 

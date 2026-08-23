@@ -190,13 +190,10 @@ class RRFSParallelOperClient:
 
     def __init__(
         self, 
-        csv_manifest_path: str, 
         download_dir: Optional[str] = None, 
         output_dir: Optional[str] = None,
         target_vars: Optional[List[str]] = None
-    ):
-        self.csv_path = Path(csv_manifest_path)
-        
+    ):        
         today_str = datetime.date.today().strftime("%Y%m%d")
         self.download_dir = Path(download_dir) if download_dir else Path(CACHE_BASE_DIR) / "rrfs_para_downloads" / today_str
         self.output_dir = Path(output_dir) if output_dir else Path(CACHE_BASE_DIR) / "rrfs_soundings_nc" / today_str
@@ -205,13 +202,12 @@ class RRFSParallelOperClient:
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
         self.target_vars = target_vars or ['t', 'r', 'gh', 'u', 'v']
-        self._load_manifest()
         self.session = requests.Session()
 
-    def _load_manifest(self):
+    def _load_manifest(self, manifest_path):
         """Loads and parses fire manifest CSV."""
-        print(f"[*] Loading fire manifest: {self.csv_path}")
-        df = pd.read_csv(self.csv_path).dropna(subset=['wkt_geometry', 'fire_index_id'])
+        print(f"[*] Loading fire manifest: {manifest_path}")
+        df = pd.read_csv(manifest_path).dropna(subset=['wkt_geometry', 'fire_index_id'])
         if 'fire_name' not in df.columns:
             df['fire_name'] = df['fire_index_id']
         self.df_manifest = df
@@ -263,8 +259,10 @@ class RRFSParallelOperClient:
 
         return downloaded_paths, target_date, cycle
 
-    def process_fires_in_parallel(self, grib_paths: List[Path], max_workers: int = 4) -> Path:
+    def process_fires_in_parallel(self, grib_paths: List[Path], csv_manifest_path: str, max_workers: int = 4) -> Path:
         """Executes parallel spatial extraction across downloaded GRIB files into NetCDFs."""
+        self._load_manifest(Path(csv_manifest_path))
+        self.session = requests.Session()
         if not grib_paths:
             print("[-] No valid GRIB files available for processing.")
             return self.output_dir / "processing_summary.csv"

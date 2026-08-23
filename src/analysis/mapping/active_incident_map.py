@@ -5,8 +5,8 @@ from shapely.ops import transform
 from shapely import wkt
 import pyproj
 from functools import partial
-from shapely.geometry import shape
-from shapely import Point, intersects
+from shapely.geometry import shape, box, mapping, Point
+from shapely import intersects
 import shutil
 
 from analysis.mapping.fire_map_base import FireMapBase
@@ -39,11 +39,21 @@ def prune_inactive_fires(fire_info_csv, rave_csv, bbox):
 
 class ActiveFirePerimeterPipeline(FireMapBase):
     def __init__(self, *args, **kwargs):
-        # Authoritative REST Service Endpoints for Live Public Geospatial Perimeters
+        # Authoritative WFIGS REST Service Endpoints
         self.us_endpoint = "https://services3.arcgis.com/T4QMspbfLg3qTGWY/arcgis/rest/services/WFIGS_Interagency_Perimeters_Current/FeatureServer/0/query"
+        self.us_locations_endpoint = "https://services3.arcgis.com/T4QMspbfLg3qTGWY/arcgis/rest/services/WFIGS_Incident_Locations_Current/FeatureServer/0/query"
+        
+        # Esri USA Wildfires v1 Feed (Powers Dashboard & Hawk Fire Tracking)
+        self.us_wildfires_v1_endpoint = "https://services9.arcgis.com/RHVPKKiFTONKtxq3/ArcGIS/rest/services/USA_Wildfires_v1/FeatureServer/0/query"
+        
         self.ca_endpoint = "https://services.arcgis.com/wjcPoefzjpzCgffS/ArcGIS/rest/services/Active_Wildfire_Perimeters_in_Canada/FeatureServer/0/query"
         self.ca_points_endpoint = "https://services.arcgis.com/wjcPoefzjpzCgffS/arcgis/rest/services/activefires/FeatureServer/0/query"
         super().__init__(*args, **kwargs)
+
+    def _clean_id(self, val):
+        if not val or not isinstance(val, str):
+            return ""
+        return val.replace('{', '').replace('}', '').strip().upper()
 
     def _query_arcgis_featureserver(self, url, where_clause="1=1", out_fields="*"):
         """
@@ -87,47 +97,123 @@ class ActiveFirePerimeterPipeline(FireMapBase):
 
     def _process_us_perimeters(self):
         """
-        Helper function to extract, normalize, and structurally clean 
-        active US Interagency perimeters using the WFIGS schema mapping.
+        Extracts US perimeters across WFIGS and USA_Wildfires_v1 endpoints.
+        Deduplicates strictly by normalized IRWIN ID, or by matching Name + Centroid Proximity.
         """
         print("[*] Accessing US WFIGS Current Interagency Fire Perimeters...")
-        # WFIGS filters out uncertified inactive historical records natively inside 'current'
-        raw_features = self._query_arcgis_featureserver(self.us_endpoint)
-        standardized = []
+        raw_polygons = self._query_arcgis_featureserver(self.us_endpoint)
         
-        for feature in raw_features:
+        print("[*] Accessing US WFIGS Current Interagency Incident Locations...")
+        raw_locations = self._query_arcgis_featureserver(self.us_locations_endpoint)
+
+        print("[*] Accessing USA Wildfires v1 Feed (Dashboard Aggregator)...")
+        raw_usa_v1 = self._query_arcgis_featureserver(self.us_wildfires_v1_endpoint)
+
+        polygon_map = {}
+        
+        # 1. Index perimeter polygons by normalized IrwinID and Name
+        for feature in raw_polygons:
             props = feature.get("properties", {})
             geom = feature.get("geometry", None)
             if not geom or geom.get("type") not in ["Polygon", "MultiPolygon"]:
                 continue
+
+            irwin_id = self._clean_id(props.get("poly_IRWINID", props.get("attr_IrwinID", "")))
+            name = props.get("poly_IncidentName", props.get("attr_IncidentName", "")).strip().upper()
+            
+            if irwin_id:
+                polygon_map[irwin_id] = feature
+            if name and name not in polygon_map:
+                polygon_map[name] = feature
+
+        all_incidents = raw_locations + raw_usa_v1
+        standardized = []
+        processed_irwin_ids = set()
+        seen_entries = [] # List of tuples: (name_upper, shapely_centroid)
+
+        # 2. Process all point/incident records
+        for loc_feat in all_incidents:
+            props = loc_feat.get("properties", {})
+            irwin_id = self._clean_id(props.get("IrwinID", props.get("attr_IrwinID", props.get("poly_IRWINID", ""))))
+            name = props.get("IncidentName", props.get("attr_IncidentName", props.get("poly_IncidentName", "Unnamed US Incident"))).strip()
+            name_key = name.upper()
+
+            # Deduplication Check 1: Strict IRWIN ID match
+            if irwin_id and irwin_id in processed_irwin_ids:
+                continue
+
+            final_geom = None
+            poly_acres = None
+
+            # Preference A: Use matching perimeter polygon
+            match_feat = polygon_map.get(irwin_id) or polygon_map.get(name_key)
+            if match_feat:
+                final_geom = match_feat.get("geometry")
+                poly_acres = match_feat.get("properties", {}).get("poly_GISAcres", None)
+
+            # Preference B: Fallback to 0.5-degree bounding box around point location
+            if not final_geom:
+                geom = loc_feat.get("geometry", None)
+                lon, lat = None, None
+
+                if geom and geom.get("type") == "Point":
+                    coords = geom.get("coordinates", [])
+                    if len(coords) >= 2:
+                        lon, lat = coords[0], coords[1]
                 
-            # Cross-reference attributes safely from WFIGS schema specs
-            # Unique IRWIN ID string identifier (e.g. {ABCD-1234...})
-            irwin_id = props.get("attr_IrwinID", props.get("poly_IRWINID", "UNKNOWN_US_ID")).replace('{','').replace('}','')
-            
-            # Fire Status evaluation rules matching NWCG standards
-            is_out = props.get("attr_FireOutDateTime", None) is not None
+                if lon is None or lat is None:
+                    lon = props.get("attr_InitialLongitude", props.get("Longitude", props.get("longitude", None)))
+                    lat = props.get("attr_InitialLatitude", props.get("Latitude", props.get("latitude", None)))
+
+                if lon is not None and lat is not None:
+                    try:
+                        lon, lat = float(lon), float(lat)
+                        bbox_polygon = box(lon - 0.25, lat - 0.25, lon + 0.25, lat + 0.25)
+                        final_geom = mapping(bbox_polygon)
+                    except (ValueError, TypeError):
+                        final_geom = None
+
+            if not final_geom:
+                continue
+
+            # Deduplication Check 2: Same Name AND Close Centroid Distance (< ~10 km / 0.1 deg)
+            try:
+                shapely_obj = shape(final_geom)
+                centroid = shapely_obj.centroid
+                
+                is_duplicate = False
+                for prev_name, prev_centroid in seen_entries:
+                    if prev_name == name_key and centroid.distance(prev_centroid) < 0.1:
+                        is_duplicate = True
+                        break
+                
+                if is_duplicate:
+                    continue
+
+                seen_entries.append((name_key, centroid))
+            except Exception:
+                pass
+
+            is_out = props.get("attr_FireOutDateTime", props.get("FireOutDateTime", None)) is not None
             status = "Inactive/Out" if is_out else "Active"
-            
-            # Handle timestamps (ArcGIS represents time in Epoch milliseconds)
-            start_ms = props.get("attr_FireDiscoveryDateTime", props.get("poly_CreateDate", None))
+
+            start_ms = props.get("attr_FireDiscoveryDateTime", props.get("FireDiscoveryDateTime", props.get("poly_CreateDate", None)))
             start_date_iso = None
             if start_ms:
                 try:
                     start_date_iso = datetime.utcfromtimestamp(start_ms / 1000.0).strftime("%Y-%m-%dT%H:%M:%SZ")
                 except Exception:
                     pass
-            
-            # Area normalization (convert GIS Acres standard to Square Kilometers)
-            gis_acres = props.get("poly_GISAcres", props.get("attr_IncidentSize", 0.0))
+
+            gis_acres = poly_acres or props.get("DailyAcres", props.get("attr_IncidentSize", props.get("poly_GISAcres", 0.0)))
             area_km2 = float(gis_acres) * 0.00404686 if gis_acres else 0.0
-            
+
             standardized.append({
                 "type": "Feature",
-                "geometry": geom,
+                "geometry": final_geom,
                 "properties": {
-                    "fireid": irwin_id,
-                    "name": props.get("poly_IncidentName", "Unnamed US Incident"),
+                    "fireid": irwin_id if irwin_id else f"US_{name_key.replace(' ', '_')}",
+                    "name": name,
                     "farea": round(area_km2, 3),
                     "t_start": start_date_iso,
                     "t_end": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -135,6 +221,10 @@ class ActiveFirePerimeterPipeline(FireMapBase):
                     "country": "USA"
                 }
             })
+
+            if irwin_id:
+                processed_irwin_ids.add(irwin_id)
+
         print(f"[+] Successfully structured {len(standardized)} US active fire tracks.")
         return standardized
     

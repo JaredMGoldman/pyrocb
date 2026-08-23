@@ -1,16 +1,43 @@
 import os
-import base64
 import datetime
 from pathlib import Path
 import pandas as pd
 import folium
+from shapely import box
 from shapely import wkt
 from shapely.geometry import mapping
 
+
+from analysis.realtime_pft.active_pft_maker import run_parallel_pft_from_netcdf, \
+                                                    generate_realtime_pft_plots
+from analysis.mapping.copy_util import upload_simplified
 import analysis.realtime_pft.realtime_pft_config as pft_config
+import analysis.mapping.config as daily_config
+from analysis.mapping.rave_oper_client import RAVEOperClient
 from analysis.mapping_utils import encode_image_to_base64, add_local_png_favicon
+from analysis.mapping.active_incident_map import prune_inactive_fires
 from utils.constants import CACHE_BASE_DIR
 
+def FETCH(cycle):
+    print('fetching active fire polygons...')
+    manifest_path = os.path.join(pft_config.MANIFEST_DIR, daily_config.active_fire_fname.replace(".csv", f"_{cycle}z.csv"))
+    rave_path = os.path.join(pft_config.RAVE_DIR, daily_config.active_rave_fn.replace(".csv", f"_{cycle}z.csv"))
+    os.makedirs(os.path.dirname(manifest_path), exist_ok=True)
+    os.makedirs(os.path.dirname(rave_path), exist_ok=True)
+    daily_config.active_fire_class()\
+            .fetch_fires(csv_path = manifest_path)
+
+    pipeline = RAVEOperClient(csv_path = manifest_path,
+                        download_dir = daily_config.rave_cache,
+                        output_csv = rave_path)
+    downloaded_files = pipeline.download_rave_files(last_n_days=pft_config.rave_lookback, 
+                                                        reference_date=pft_config.now_dt)
+    pipeline.extract_frp_data_parallel_files(downloaded_files, pft_config.max_workers)
+    
+    prune_inactive_fires(manifest_path,
+                        rave_path,
+                        box(*daily_config.bounds))
+    return manifest_path, rave_path
 
 def generate_interactive_pft_map(
     manifest_csv: str, 
@@ -183,22 +210,17 @@ def generate_interactive_pft_map(
 
 
 if __name__ == "__main__":
-    from analysis.realtime_pft.active_pft_maker import run_parallel_pft_from_netcdf, \
-                                                        generate_realtime_pft_plots
-    from analysis.mapping.copy_util import upload_simplified
-
-    if not os.path.exists(pft_config.manifest_path):
-        raise RuntimeError(f"No manifest found at {pft_config.manifest_path}")
-
-    client = pft_config.pft_oper_client(csv_manifest_path=pft_config.manifest_path)
+    client = pft_config.pft_oper_client(download_dir=pft_config.GRIB_DIR,
+                                        output_dir=pft_config.NC_DIR)
     grib_paths, cycle_date, cycle_hour = client.download_latest_prslev_data(fxx_hours=range(0, pft_config.fxx_range + 1,
-                                                                                            pft_config.fxx_interval))
-    summary_csv = client.process_fires_in_parallel(grib_paths, max_workers=pft_config.max_workers)
-
+                                                                                           pft_config.fxx_interval))
+    manifest_path, rave_path = FETCH(cycle_hour)
+    summary_csv = client.process_fires_in_parallel(grib_paths, manifest_path, max_workers=pft_config.max_workers)
+    
     # 2. Run PFT processor on NetCDF files in parallel (no dataset merging)
     out_csv = run_parallel_pft_from_netcdf(
         summary_csv_path=summary_csv,
-        manifest_path = pft_config.manifest_path,
+        manifest_path = manifest_path,
         cycle_date=cycle_date,
         cycle_hour=cycle_hour,
         max_workers=pft_config.max_workers
@@ -212,7 +234,7 @@ if __name__ == "__main__":
     plots_dir = Path(CACHE_BASE_DIR) / "pft_plots" / f"run_{run_tag}"
 
     html_path = generate_interactive_pft_map(
-            manifest_csv=pft_config.manifest_path,
+            manifest_csv=manifest_path,
             pft_csv_path=latest_csv,
             plots_dir=plots_dir
         )
