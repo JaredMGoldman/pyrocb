@@ -13,7 +13,7 @@ import pandas as pd
 import xarray as xr
 import requests
 from shapely import wkt
-from shapely.geometry import Polygon, MultiPolygon
+from shapely.geometry import Polygon, MultiPolygon, box
 from tqdm import tqdm as timer
 
 from utils.constants import CACHE_BASE_DIR
@@ -32,6 +32,108 @@ CURL_HEADERS = (
 # =============================================================================
 # Spatial & Dataset Utility Functions
 # =============================================================================
+
+def _extract_fire_subset(fire_task: Tuple[Dict, Path, List[str]]) -> Dict:
+    """Sub-worker that processes a single fire against a pre-opened/pre-loaded GRIB file."""
+    fire, grib_path, target_vars, output_dir_str = fire_task
+    output_dir = Path(output_dir_str)
+    
+    fire_id = fire['fire_index_id']
+    fire_name = fire.get('fire_name', fire_id)
+    out_fname = output_dir / f"rrfs_sounding_{fire_id}_{grib_path.stem}.nc"
+
+    if out_fname.exists():
+        return {
+            "fire_index_id": fire_id,
+            "fire_name": fire_name,
+            "grib_file": grib_path.name,
+            "output_nc": str(out_fname),
+            "status": "SUCCESS"
+        }
+
+    try:
+        geom = wkt.loads(fire['wkt_geometry'])
+        minx, miny, maxx, maxy = geom.bounds
+        buf = 0.3
+        
+        # Fast spatial slice bounding box
+        minx -= buf
+        maxx += buf
+        miny -= buf
+        maxy += buf
+
+        # Load GRIB for target bounds lazily
+        ds = xr.open_dataset(
+            grib_path,
+            engine="cfgrib",
+            filter_by_keys={'typeOfLevel': 'isobaricInhPa'},
+            backend_kwargs={'errors': 'ignore'}
+        )
+        ds = wrap_lons_to_180(ds)
+        lat_name, lon_name = infer_lat_lon_names(ds)
+
+        available_vars = [v for v in target_vars if v in ds.data_vars]
+        if available_vars:
+            ds = ds[available_vars]
+
+        # Fast 2D Masking using NumPy instead of xarray .where()
+        lat_vals = ds[lat_name].values
+        lon_vals = ds[lon_name].values
+        
+        mask = (
+            (lat_vals >= miny) & (lat_vals <= maxy) &
+            (lon_vals >= minx) & (lon_vals <= maxx)
+        )
+
+        if not np.any(mask):
+            return {
+                "fire_index_id": fire_id,
+                "fire_name": fire_name,
+                "grib_file": grib_path.name,
+                "error": "Fire location outside dataset domain",
+                "status": "SKIPPED"
+            }
+
+        # Indexing along spatial dimensions using numpy slice bounds
+        y_indices, x_indices = np.where(mask)
+        ymin, ymax = y_indices.min(), y_indices.max() + 1
+        xmin, xmax = x_indices.min(), x_indices.max() + 1
+
+        if lat_vals.ndim == 2:
+            subset = ds.isel({ds[lat_name].dims[0]: slice(ymin, ymax), ds[lat_name].dims[1]: slice(xmin, xmax)})
+        else:
+            subset = ds.isel({lat_name: slice(ymin, ymax), lon_name: slice(xmin, xmax)})
+
+        spatial_dims = [d for d in subset.dims if d != 'isobaricInhPa']
+        ds_compressed = subset.stack(spatial_point=spatial_dims)
+        
+        if available_vars:
+            ds_compressed = ds_compressed.dropna(dim="spatial_point", how="all", subset=available_vars)
+        
+        ds_compressed = ds_compressed.reset_index('spatial_point')
+        ds_compressed.attrs['fire_index_id'] = str(fire_id)
+        ds_compressed.attrs['fire_name'] = str(fire_name)
+
+        # Write to NetCDF (complevel=1 for speed over compression ratio)
+        encoding = {var: {"zlib": True, "complevel": 1} for var in available_vars}
+        ds_compressed.to_netcdf(out_fname, encoding=encoding)
+        ds.close()
+
+        return {
+            "fire_index_id": fire_id,
+            "fire_name": fire_name,
+            "grib_file": grib_path.name,
+            "output_nc": str(out_fname),
+            "status": "SUCCESS"
+        }
+    except Exception as e:
+        return {
+            "fire_index_id": fire_id,
+            "fire_name": fire_name,
+            "grib_file": grib_path.name,
+            "error": str(e),
+            "status": "FAILED"
+        }
 
 def infer_lat_lon_names(ds: xr.Dataset) -> Tuple[str, str]:
     """Infers latitude and longitude coordinate or variable names from dataset."""
@@ -90,92 +192,6 @@ def subset_dataset_to_bbox(ds: xr.Dataset, bbox: Tuple[float, float, float, floa
             (lon_vals >= min_lon) & (lon_vals <= max_lon)
         )
         return ds.where(xr.DataArray(mask, dims=ds[lat_name].dims), drop=True)
-
-
-# =============================================================================
-# Multiprocessing Worker Function
-# =============================================================================
-
-def _process_rrfs_sounding_worker(
-    grib_path: Path, 
-    fires: List[Dict], 
-    output_dir: Path, 
-    target_vars: List[str]
-) -> List[Dict]:
-    """
-    Worker process: Opens downloaded GRIB2 file ONCE, extracts soundings
-    for each fire boundary, and saves compressed NetCDF output files.
-    """
-    results = []
-    if not grib_path.exists():
-        return results
-
-    try:
-        ds = xr.load_dataset(
-            grib_path,
-            engine="cfgrib",
-            filter_by_keys={'typeOfLevel': 'isobaricInhPa'},
-            backend_kwargs={'errors': 'ignore'}
-        )
-        ds = wrap_lons_to_180(ds)
-
-        available_vars = [v for v in target_vars if v in ds.data_vars]
-        if available_vars:
-            ds = ds[available_vars]
-
-        for fire in fires:
-            fire_id = fire['fire_index_id']
-            fire_name = fire.get('fire_name', fire_id)
-            out_fname = output_dir / f"rrfs_sounding_{fire_id}_{grib_path.stem}.nc"
-            
-            if os.path.exists(out_fname):
-                results.append({
-                    "fire_index_id": fire_id,
-                    "fire_name": fire_name,
-                    "grib_file": grib_path.name,
-                    "output_nc": str(out_fname),
-                    "status": "SUCCESS"
-                })
-                continue
-
-            geom = wkt.loads(fire['wkt_geometry'])
-            bounds = geom.bounds  # (minx, miny, maxx, maxy)
-
-            try:
-                subset = subset_dataset_to_bbox(ds, bounds, buffer_deg=0.15)
-                spatial_dims = [d for d in subset.dims if d != 'isobaricInhPa']
-                ds_compressed = subset.stack(spatial_point=spatial_dims)
-                
-                if available_vars:
-                    ds_compressed = ds_compressed.dropna(dim="spatial_point", how="all", subset=available_vars)
-                ds_compressed = ds_compressed.reset_index('spatial_point')
-                # Add fire metadata directly to the xarray attributes
-                ds_compressed.attrs['fire_index_id'] = str(fire_id)
-                ds_compressed.attrs['fire_name'] = str(fire_name)
-
-                ds_compressed.to_netcdf(out_fname)
-
-                results.append({
-                    "fire_index_id": fire_id,
-                    "fire_name": fire_name,
-                    "grib_file": grib_path.name,
-                    "output_nc": str(out_fname),
-                    "status": "SUCCESS"
-                })
-            except Exception as e:
-                results.append({
-                    "fire_index_id": fire_id,
-                    "fire_name": fire_name,
-                    "grib_file": grib_path.name,
-                    "error": str(e),
-                    "status": "FAILED"
-                })
-
-        ds.close()
-    except Exception as e:
-        print(f"Failed to process file {grib_path.name}: {e}", file=sys.stderr)
-
-    return results
 
 
 # =============================================================================
@@ -259,42 +275,53 @@ class RRFSParallelOperClient:
 
         return downloaded_paths, target_date, cycle
 
-    def process_fires_in_parallel(self, grib_paths: List[Path], csv_manifest_path: str, max_workers: int = 4) -> Path:
-        """Executes parallel spatial extraction across downloaded GRIB files into NetCDFs."""
+    def process_fires_in_parallel(self, grib_paths: List[Path], csv_manifest_path: str, max_workers: int = 8) -> Path:
+        """Executes parallel spatial extraction across all fires and GRIB files."""
         self._load_manifest(Path(csv_manifest_path))
-        self.session = requests.Session()
         if not grib_paths:
             print("[-] No valid GRIB files available for processing.")
             return self.output_dir / "processing_summary.csv"
 
-        print(f"[*] Extracting soundings for {len(self.serialized_fires)} fires using {max_workers} processes...")
+        # --- PRE-INDEXING STEP ---
+        # Sequentially open each GRIB file once to force cfgrib to safely write the .idx file
+        print("[*] Pre-building cfgrib index files to prevent process race conditions...")
+        for grib_path in grib_paths:
+            try:
+                ds = xr.open_dataset(
+                    grib_path,
+                    engine="cfgrib",
+                    filter_by_keys={'typeOfLevel': 'isobaricInhPa'},
+                    backend_kwargs={'errors': 'ignore'}
+                )
+                ds.close()
+            except Exception as e:
+                print(f"[-] Warning pre-indexing {grib_path.name}: {e}", file=sys.stderr)
+        # -------------------------
+
+        # Build flat task list: N_fires x M_grib_files
+        tasks = []
+        for grib_path in grib_paths:
+            for fire in self.serialized_fires:
+                tasks.append((fire, grib_path, self.target_vars, str(self.output_dir)))
+
+        print(f"[*] Extracting soundings across {len(tasks)} tasks using {max_workers} worker processes...")
         
         all_results = []
         with ProcessPoolExecutor(max_workers=max_workers) as executor:
-            futures = {
-                executor.submit(
-                    _process_rrfs_sounding_worker, 
-                    path, 
-                    self.serialized_fires, 
-                    self.output_dir, 
-                    self.target_vars
-                ): path for path in grib_paths
-            }
+            futures = {executor.submit(_extract_fire_subset, task): task for task in tasks}
 
-            for future in timer(as_completed(futures), desc="RRFS NetCDF Extraction", total=len(futures)):
-                path = futures[future]
+            for future in timer(as_completed(futures), desc="RRFS Sounding Extraction", total=len(futures)):
                 try:
                     res = future.result()
-                    all_results.extend(res)
+                    all_results.append(res)
                 except Exception as e:
-                    print(f"[-] Exception executing process for {path.name}: {e}")
+                    print(f"[-] Exception executing task: {e}")
 
         summary_df = pd.DataFrame(all_results)
         summary_csv = self.output_dir / "processing_summary.csv"
         summary_df.to_csv(summary_csv, index=False)
         print(f"[*] Extraction complete! NetCDF manifest saved to: {summary_csv}")
         return summary_csv
-
 
 if __name__ == "__main__":
     today_str = datetime.date.today().strftime("%Y_%m_%d")

@@ -7,7 +7,7 @@ from utils.constants import CACHE_BASE_DIR, get_repo_root
 from analysis.realtime_pft.rrfs_para_oper_client import RRFSParallelOperClient
 
 rave_lookback = 2
-fxx_range = 24
+fxx_range = 10
 fxx_interval = 1
 max_workers = 48
 

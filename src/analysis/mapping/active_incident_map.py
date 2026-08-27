@@ -1,3 +1,5 @@
+import geopandas as gpd
+import numpy as np
 import requests
 import pandas as pd
 from datetime import datetime
@@ -5,11 +7,25 @@ from shapely.ops import transform
 from shapely import wkt
 import pyproj
 from functools import partial
-from shapely.geometry import shape, box, mapping, Point
+from shapely.geometry import shape, box, mapping, Point, Polygon, MultiPolygon
 from shapely import intersects
 import shutil
 
 from analysis.mapping.fire_map_base import FireMapBase
+
+def create_geodesic_buffer(lat: float, lon: float, radius_km: float = 5.0) -> Polygon:
+    """Creates a latitude-corrected circular polygon buffer around a point (in WGS84)."""
+    # 1 degree of latitude ~ 111 km
+    lat_deg = radius_km / 111.0
+    # 1 degree of longitude scales with the cosine of the latitude
+    lon_deg = radius_km / (111.0 * np.cos(np.radians(lat)))
+
+    # Construct an ellipse using normalized unit circle coordinates to preserve circular geometry
+    angles = np.linspace(0, 2 * np.pi, 64)
+    circle_lons = lon + lon_deg * np.cos(angles)
+    circle_lats = lat + lat_deg * np.sin(angles)
+    
+    return Polygon(zip(circle_lons, circle_lats))
 
 def prune_inactive_fires(fire_info_csv, rave_csv, bbox):
     shutil.copy(fire_info_csv, fire_info_csv.replace('.csv', '_superset.csv'))
@@ -109,22 +125,26 @@ class ActiveFirePerimeterPipeline(FireMapBase):
         print("[*] Accessing USA Wildfires v1 Feed (Dashboard Aggregator)...")
         raw_usa_v1 = self._query_arcgis_featureserver(self.us_wildfires_v1_endpoint)
 
-        polygon_map = {}
+        polygon_map_by_id = {}
+        polygon_map_by_name = {}
         
-        # 1. Index perimeter polygons by normalized IrwinID and Name
+        # 1. Index perimeter polygons by cleaned IrwinID AND uppercase Name
         for feature in raw_polygons:
-            props = feature.get("properties", {})
-            geom = feature.get("geometry", None)
-            if not geom or geom.get("type") not in ["Polygon", "MultiPolygon"]:
-                continue
+            try:
+                props = feature.get("properties", {})
+                geom = feature.get("geometry", None)
+                if not geom or geom.get("type") not in ["Polygon", "MultiPolygon"]:
+                    continue
 
-            irwin_id = self._clean_id(props.get("poly_IRWINID", props.get("attr_IrwinID", "")))
-            name = props.get("poly_IncidentName", props.get("attr_IncidentName", "")).strip().upper()
-            
-            if irwin_id:
-                polygon_map[irwin_id] = feature
-            if name and name not in polygon_map:
-                polygon_map[name] = feature
+                irwin_id = self._clean_id(props.get("poly_IRWINID", props.get("attr_IrwinID", props.get("IrwinID", ""))))
+                name = str(props.get("poly_IncidentName", props.get("attr_IncidentName", props.get("IncidentName", "")))).strip().upper()
+                
+                if irwin_id:
+                    polygon_map_by_id[irwin_id] = feature
+                if name:
+                    polygon_map_by_name[name] = feature
+            except Exception:
+                continue
 
         all_incidents = raw_locations + raw_usa_v1
         standardized = []
@@ -133,45 +153,70 @@ class ActiveFirePerimeterPipeline(FireMapBase):
 
         # 2. Process all point/incident records
         for loc_feat in all_incidents:
-            props = loc_feat.get("properties", {})
-            irwin_id = self._clean_id(props.get("IrwinID", props.get("attr_IrwinID", props.get("poly_IRWINID", ""))))
-            name = props.get("IncidentName", props.get("attr_IncidentName", props.get("poly_IncidentName", "Unnamed US Incident"))).strip()
-            name_key = name.upper()
+            try:
+                props = loc_feat.get("properties", {})
+                irwin_id = self._clean_id(props.get("IrwinID", props.get("attr_IrwinID", props.get("poly_IRWINID", ""))))
+                name = str(props.get("IncidentName", props.get("attr_IncidentName", props.get("poly_IncidentName", "Unnamed US Incident")))).strip()
+                name_key = name.upper()
 
-            # Deduplication Check 1: Strict IRWIN ID match
-            if irwin_id and irwin_id in processed_irwin_ids:
+                # Deduplication Check 1: Strict IRWIN ID match
+                if irwin_id and irwin_id in processed_irwin_ids:
+                    continue
+
+                final_geom = None
+                poly_acres = None
+
+                # Preference A: Use perimeter polygon if present and non-point
+                # Look up explicitly by cleaned ID first, then by normalized Name key
+                match_feat = polygon_map_by_id.get(irwin_id) if irwin_id else None
+                if not match_feat and name_key:
+                    match_feat = polygon_map_by_name.get(name_key)
+
+                if match_feat:
+                    raw_poly_geom = match_feat.get("geometry")
+                    if raw_poly_geom:
+                        geom_obj = shape(raw_poly_geom)
+                        if isinstance(geom_obj, (Polygon, MultiPolygon)) and not geom_obj.is_empty:
+                            final_geom = mapping(geom_obj)
+                            poly_acres = match_feat.get("properties", {}).get("poly_GISAcres", props.get("attr_IncidentSize", None))
+
+                # Preference B: Extract original geometry directly if loc_feat itself is already a Polygon
+                if not final_geom:
+                    raw_loc_geom = loc_feat.get("geometry")
+                    if raw_loc_geom:
+                        geom_obj = shape(raw_loc_geom)
+                        if isinstance(geom_obj, (Polygon, MultiPolygon)) and not geom_obj.is_empty:
+                            final_geom = mapping(geom_obj)
+
+                # Preference C: Fallback to Geodesic Buffer strictly as a last resort for points
+                if not final_geom:
+                    geom = loc_feat.get("geometry", None)
+                    lon, lat = None, None
+
+                    if geom and geom.get("type") == "Point":
+                        coords = geom.get("coordinates", [])
+                        if len(coords) >= 2:
+                            lon, lat = coords[0], coords[1]
+                    
+                    if lon is None or lat is None:
+                        lon = props.get("attr_InitialLongitude", props.get("Longitude", props.get("longitude", None)))
+                        lat = props.get("attr_InitialLatitude", props.get("Latitude", props.get("latitude", None)))
+
+                    if lon is not None and lat is not None:
+                        try:
+                            lon, lat = float(lon), float(lat)
+                            gis_acres = props.get("attr_DailyAcres", props.get("DailyAcres", 500))
+                            try:
+                                radius_km = max(2.5, np.sqrt((float(gis_acres) * 4046.86) / np.pi) / 1000.0)
+                            except (ValueError, TypeError):
+                                radius_km = 5.0
+
+                            circle_polygon = create_geodesic_buffer(lat, lon, radius_km=radius_km)
+                            final_geom = mapping(circle_polygon)
+                        except (ValueError, TypeError):
+                            final_geom = None
+            except Exception:
                 continue
-
-            final_geom = None
-            poly_acres = None
-
-            # Preference A: Use matching perimeter polygon
-            match_feat = polygon_map.get(irwin_id) or polygon_map.get(name_key)
-            if match_feat:
-                final_geom = match_feat.get("geometry")
-                poly_acres = match_feat.get("properties", {}).get("poly_GISAcres", None)
-
-            # Preference B: Fallback to 0.5-degree bounding box around point location
-            if not final_geom:
-                geom = loc_feat.get("geometry", None)
-                lon, lat = None, None
-
-                if geom and geom.get("type") == "Point":
-                    coords = geom.get("coordinates", [])
-                    if len(coords) >= 2:
-                        lon, lat = coords[0], coords[1]
-                
-                if lon is None or lat is None:
-                    lon = props.get("attr_InitialLongitude", props.get("Longitude", props.get("longitude", None)))
-                    lat = props.get("attr_InitialLatitude", props.get("Latitude", props.get("latitude", None)))
-
-                if lon is not None and lat is not None:
-                    try:
-                        lon, lat = float(lon), float(lat)
-                        bbox_polygon = box(lon - 0.25, lat - 0.25, lon + 0.25, lat + 0.25)
-                        final_geom = mapping(bbox_polygon)
-                    except (ValueError, TypeError):
-                        final_geom = None
 
             if not final_geom:
                 continue

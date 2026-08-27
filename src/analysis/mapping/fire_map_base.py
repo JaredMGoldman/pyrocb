@@ -11,9 +11,8 @@ import matplotlib.colors as mcolors
 from scipy.interpolate import griddata
 import folium
 import shapely
-from shapely.geometry import shape, mapping, Polygon, Point
-from shapely import STRtree
-from shapely.ops import nearest_points
+from shapely.geometry import shape, mapping, Polygon
+from shapely import STRtree, wkt
 import cartopy.io.shapereader as shapereader
 from shapely.ops import unary_union
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -76,17 +75,21 @@ def _worker_render_single_plot_frp(fire_key, frp_csv_path):
         return fire_key, f"<p style='color:red;'>Error generating FRP plot: {str(e)}</p>"
 
 
-def _worker_render_single_plot(fire_key, fire_name, subset_df, fx_name):
+def _worker_render_single_plot(fire_key, fire_name, subset_df, fx_name, fire_region):
     matplotlib.use('Agg')
     if subset_df.empty:
         return fire_key, "<p style='color:gray;'>No PFT metrics found overlaying or near this footprint.</p>"
 
-    pivoted_df = subset_df.pivot_table(
+    # 1. FIX: Aggregate spatial points (max/sum) across the buffered fire area per timestamp
+    # Prevents multiple grid cell entries from duplicating data in the pivot table
+    agg_df = subset_df.groupby(['time', 'plume_temp'])['value'].mean().reset_index()
+
+    pivoted_df = agg_df.pivot_table(
         index='time', 
         columns='plume_temp', 
-        values='value', 
-        aggfunc='mean'
+        values='value'
     ).sort_index()
+
 
     fig, ax = plt.subplots(figsize=(4.2, 2.4), dpi=250)
     fig.patch.set_facecolor("#FFFFFF")
@@ -124,9 +127,15 @@ def _worker_render_single_plot(fire_key, fire_name, subset_df, fx_name):
     ax.set_ylabel("PFT Value (GW)", color='black', fontsize=7)
     ax.set_yscale('log')
     ax.tick_params(colors='black', labelsize=6)
+    
+    # Keeps your custom interval configuration intact
     ax.xaxis.set_major_locator(mdates.HourLocator(interval=config.plot_freq))
     ax.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d %H:%M'))
-    ax.grid(True, color='#444444', linestyle='--', alpha=0.5)
+    
+    # 2. FIX: Turn off minor gridlines to remove dense logarithmic horizontal bars
+    ax.grid(True, which='major', color='#cccccc', linestyle='--', alpha=0.5)
+    ax.grid(False, which='minor')
+    
     ax.legend(title="Plume Temp", fontsize=5, title_fontsize=6, loc='upper left')
 
     plt.xticks(rotation=25, ha='right')
@@ -298,6 +307,38 @@ class FireMapBase(ABC):
         pft_df = pd.read_csv(pft_path)
 
         m = folium.Map(location=[45, -100], zoom_start=4, tiles="CartoDB positron")
+
+        # Base Layer 1: Esri Satellite
+        esri_satellite_url = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
+        esri_attribution = "Tiles &copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community"
+    
+        folium.TileLayer(
+            tiles=esri_satellite_url,
+            attr=esri_attribution,
+            name="Esri Satellite (Base)",
+            overlay=False,
+            control=True
+        ).add_to(m)
+    
+        # Base Layer 2: OpenStreetMap
+        folium.TileLayer(
+            tiles='openstreetmap', 
+            name='OpenStreetMap (Base)',
+            overlay=False,
+            control=True
+        ).add_to(m)
+
+        esri_boundaries_url = "https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}"
+            
+        borders_layer = folium.TileLayer(
+            tiles=esri_boundaries_url,
+            attr="Tiles &copy; Esri &mdash; Boundaries & Places",
+            name="State/Country Borders",
+            overlay=True,
+            opacity=0.8,
+            show=True
+        )
+        borders_layer.add_to(m)
         
         if pft_df.empty:
             print("[-] Warning: PFT DataFrame is empty. Skipping spatiotemporal mesh processing.")
@@ -361,11 +402,11 @@ class FireMapBase(ABC):
                 ts_naive = pd.to_datetime(ts, utc=True).tz_localize(None)
                 unix_sec = str(int(ts_naive.timestamp()))
 
-                points = ts_group[['lon', 'lat']].values
+                coords = ts_group[['lon', 'lat']].values
                 values = ts_group['value'].values
 
                 grid_coords = [(c[0], c[1]) for c in cell_centroids]
-                interpolated_values = griddata(points, values, grid_coords, method='linear')
+                interpolated_values = griddata(coords, values, grid_coords, method='linear')
 
                 for val, cell_info in zip(interpolated_values, cell_centroids):
                     # SPARSE ENCODING: Skip NaNs and values below min threshold entirely
@@ -473,38 +514,99 @@ class FireMapBase(ABC):
 
         # 6. Active Fires Feature Layer
         if fire_manifest_df is not None and not fire_manifest_df.empty:
-            pft_points = []
-            for lon, lat in tqdm.tqdm(zip(clean_pft['lon'], clean_pft['lat']), desc='formatting STR tree', total=len(clean_pft['lat'])):
-                pft_points.append(Point(lon, lat))
+            # 1. HARDEN: Build points vectorized to avoid Python C-extension memory fragmentation
+            lons = clean_pft['lon'].to_numpy()
+            lats = clean_pft['lat'].to_numpy()
+            pft_points = shapely.points(lons, lats)  # Creates array of geometries natively in C
 
+            # Construct spatial index safely
             spatial_tree = STRtree(pft_points)
 
             prepared_tasks = []
-            for f_idx in tqdm.tqdm(fire_manifest_df.fire_index_id.values, desc='preprocessing pft subsets'):
-                geom = fire_manifest_df[fire_manifest_df.fire_index_id == f_idx]['wkt_geometry'].item()
-                fire_name = fire_manifest_df[fire_manifest_df.fire_index_id == f_idx]['name'].item()
+            
+            for row in tqdm.tqdm(fire_manifest_df.itertuples(), desc='preprocessing pft subsets', total=len(fire_manifest_df)):
+                f_idx = row.fire_index_id
+                geom_str = row.wkt_geometry
+                fire_name = row.name
 
-                if not geom:
+                if not isinstance(geom_str, str) or not geom_str.strip():
                     continue
-                
+
                 try:
-                    fire_poly = shapely.wkt.loads(geom)
+                    fire_poly = wkt.loads(geom_str)
+                    if fire_poly.is_empty:
+                        continue
+                    if not fire_poly.is_valid:
+                        fire_poly = shapely.make_valid(fire_poly)
                 except Exception:
                     continue
-                    
-                indices_in_bbox = spatial_tree.query(fire_poly)
-                inside_indices = [idx for idx in indices_in_bbox if fire_poly.contains(pft_points[idx])]
+
+                # Clean geometry collection results if make_valid returns a collection
+                if fire_poly.geom_type == 'GeometryCollection':
+                    polys = [g for g in fire_poly.geoms if g.geom_type in ('Polygon', 'MultiPolygon')]
+                    if not polys:
+                        continue
+                    fire_poly = unary_union(polys)
+
+                # Expand search region
+                print("buffering fire poly")
+                search_poly = shapely.buffer(fire_poly, 0.15)
                 
-                if inside_indices:
+                # Ensure search_poly contains no non-polygon elements
+                if search_poly.geom_type == 'GeometryCollection':
+                    print("handling unusable geometry type")
+                    polys = [g for g in search_poly.geoms if g.geom_type in ('Polygon', 'MultiPolygon')]
+                    if not polys:
+                        continue
+                    search_poly = unary_union(polys)
+
+                # Query spatial index safely
+                print("querying spatially")
+                raw_query = spatial_tree.query(search_poly)
+                
+                # Handling variation in STRtree.query returns across Shapely versions
+                if isinstance(raw_query, tuple):
+                    indices_in_bbox = raw_query[0] if len(raw_query) > 0 else np.array([], dtype=int)
+                else:
+                    indices_in_bbox = raw_query
+
+                print("raveling indices")
+                indices_in_bbox = np.asarray(indices_in_bbox, dtype=int).ravel()
+
+                inside_indices = np.array([], dtype=int)
+                if len(indices_in_bbox) > 0:
+                    candidate_pts = pft_points[indices_in_bbox]
+                    
+                    # Containment check
+                    print("finding indices in box")
+                    mask = shapely.contains(search_poly, candidate_pts)
+                    inside_indices = indices_in_bbox[mask]
+
+                print("getting region")
+                # fire_region = get_state_region(fire_poly)
+
+                # Fallback: Query nearest neighbors
+                MIN_REQUIRED_POINTS = 4
+                if len(inside_indices) >= MIN_REQUIRED_POINTS:
+                    print("subsetting df")
                     subset_df = clean_pft.iloc[inside_indices].copy()
                 else:
-                    nearest_geom_idx = spatial_tree.nearest(fire_poly)
-                    nearest_point = pft_points[nearest_geom_idx]
-                    coordinate_mask = (clean_pft['lon'] == nearest_point.x) & (clean_pft['lat'] == nearest_point.y)
-                    subset_df = clean_pft[coordinate_mask].copy()
+                    print("finding nearest indices")
+                    res = spatial_tree.query_nearest(fire_poly, k=MIN_REQUIRED_POINTS)
                     
-                prepared_tasks.append((f_idx, fire_name, subset_df))
-                
+                    if isinstance(res, tuple):
+                        print("finding nearest indices (1)")
+                        # Shape of query_nearest output varies depending on whether input is single geometry or array
+                        tree_idx = res[1] if len(res) > 1 else res[0]
+                        nearest_indices = np.asarray(tree_idx, dtype=int).ravel()
+                    else:
+                        print("finding nearest indices (2)")
+                        nearest_indices = np.asarray(res, dtype=int).ravel()
+
+                    subset_df = clean_pft.iloc[nearest_indices].copy()
+
+                prepared_tasks.append((f_idx, fire_name, subset_df, ""))
+            
             fires_layer_group = folium.FeatureGroup(name="Active Fires", show=True)
 
             print(f"[+] Launching parallel rendering across worker pools for {len(prepared_tasks)} fires...")
@@ -513,8 +615,8 @@ class FireMapBase(ABC):
             frp_chart = {}
             with ProcessPoolExecutor(max_workers=config.max_workers) as executor:
                 futures = [
-                    executor.submit(_worker_render_single_plot, fire_key, fire_name, sub_df, config.fx_names[0])
-                    for fire_key, fire_name, sub_df in prepared_tasks
+                    executor.submit(_worker_render_single_plot, fire_key, fire_name, sub_df, config.fx_names[0], fire_region)
+                    for fire_key, fire_name, sub_df, fire_region in prepared_tasks
                 ]
                 
                 for f in tqdm.tqdm(as_completed(futures), total=len(prepared_tasks), desc="PFT Popup Plots"):

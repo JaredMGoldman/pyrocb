@@ -15,7 +15,7 @@ from utils.constants import CACHE_BASE_DIR, get_repo_root
 def make_n_len_str(value, n=2):
     return f"%0{n}d" % (int(value),)
 
-DEBUG_MODE = True
+DEBUG_MODE = False
 PRUNE_BOOL = True
 LATEST_BOOL = True
 
