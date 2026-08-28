@@ -12,6 +12,7 @@ data/cp_poly.gpkg
 data/cp_poly.csv
 src/pyrocb.egg-info
 src/data/clients/*.key
+src/data/clients/*.netrc
 *.csv
 *cache*
 */cache*
