@@ -550,7 +550,7 @@ class FireMapBase(ABC):
 
                 # Expand search region
                 print("buffering fire poly")
-                search_poly = shapely.buffer(fire_poly, 0.15)
+                search_poly = shapely.buffer(fire_poly, 0.3)
                 
                 # Ensure search_poly contains no non-polygon elements
                 if search_poly.geom_type == 'GeometryCollection':
@@ -587,23 +587,33 @@ class FireMapBase(ABC):
 
                 # Fallback: Query nearest neighbors
                 MIN_REQUIRED_POINTS = 4
+
                 if len(inside_indices) >= MIN_REQUIRED_POINTS:
                     print("subsetting df")
                     subset_df = clean_pft.iloc[inside_indices].copy()
                 else:
                     print("finding nearest indices")
-                    res = spatial_tree.query_nearest(fire_poly, k=MIN_REQUIRED_POINTS)
                     
-                    if isinstance(res, tuple):
-                        print("finding nearest indices (1)")
-                        # Shape of query_nearest output varies depending on whether input is single geometry or array
-                        tree_idx = res[1] if len(res) > 1 else res[0]
-                        nearest_indices = np.asarray(tree_idx, dtype=int).ravel()
-                    else:
-                        print("finding nearest indices (2)")
-                        nearest_indices = np.asarray(res, dtype=int).ravel()
-
-                    subset_df = clean_pft.iloc[nearest_indices].copy()
+                    # 1. Query all candidate geometries from the tree
+                    candidate_indices = spatial_tree.query(fire_poly)
+                    
+                    # 2. Exclude any indices already inside to prevent duplicates
+                    outside_candidate_indices = [idx for idx in candidate_indices if idx not in inside_indices]
+                    
+                    # 3. Compute distance for candidate geometries
+                    distances = [fire_poly.distance(spatial_tree.geometries[idx]) for idx in outside_candidate_indices]
+                    
+                    # 4. Sort candidates by distance
+                    sorted_candidates = sorted(zip(distances, outside_candidate_indices), key=lambda x: x[0])
+                    
+                    # 5. Take only as many nearest points as needed to reach MIN_REQUIRED_POINTS
+                    needed_count = MIN_REQUIRED_POINTS - len(inside_indices)
+                    nearest_indices = [idx for dist, idx in sorted_candidates[:needed_count]]
+                    
+                    # 6. Combine inside indices with the additional nearest neighbors
+                    combined_indices = np.array(list(inside_indices) + nearest_indices, dtype=int)
+                    
+                    subset_df = clean_pft.iloc[combined_indices].copy()
 
                 prepared_tasks.append((f_idx, fire_name, subset_df, ""))
             
