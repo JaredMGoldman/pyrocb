@@ -39,7 +39,7 @@ def get_fire_geom_list(daily_dir):
     return fire_polygons
 
 
-def map_cache_to_fires(cache, active_fires, padding=0.125):
+def map_cache_to_fires(cache, active_fires, padding=0.3):
     """
     OPTIMIZATION 1: Single-pass spatial index mapping with degree-based geometry padding.
     
